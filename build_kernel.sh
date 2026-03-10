@@ -122,18 +122,18 @@ CONFIG_LD_DEAD_CODE_DATA_ELIMINATION=y
 # CONFIG_BLK_DEV_INITRD is not set
 
 # ---- Slim down general setup ----
-# CONFIG_SYSVIPC is not set
+CONFIG_SYSVIPC=y
 # CONFIG_CROSS_MEMORY_ATTACH is not set
 # CONFIG_FHANDLE is not set
-# CONFIG_POSIX_TIMERS is not set
-# CONFIG_SHMEM is not set
+CONFIG_POSIX_TIMERS=y
+CONFIG_SHMEM=y
 # CONFIG_AIO is not set
 # CONFIG_ADVISE_SYSCALLS is not set
 # CONFIG_MEMBARRIER is not set
 # CONFIG_RSEQ is not set
 # CONFIG_KALLSYMS is not set
 # CONFIG_RELAY is not set
-# CONFIG_EXPERT is not set
+CONFIG_EXPERT=y
 # CONFIG_ELF_CORE is not set
 # CONFIG_COREDUMP is not set
 # CONFIG_SYSFS_SYSCALL is not set
@@ -445,6 +445,7 @@ CONFIG_TMPFS=y
 # ---- Disable multimedia/input/display/sound/HID ----
 # CONFIG_INPUT is not set
 # CONFIG_VT is not set
+# CONFIG_DUMMY_CONSOLE is not set
 # CONFIG_HID is not set
 # CONFIG_DRM is not set
 # CONFIG_FB is not set
@@ -470,7 +471,10 @@ CONFIG_TMPFS=y
 # CONFIG_CONNECTOR is not set
 # CONFIG_HWMON is not set
 # CONFIG_THERMAL is not set
-# CONFIG_WATCHDOG is not set
+CONFIG_WATCHDOG=y
+CONFIG_WATCHDOG_CORE=y
+CONFIG_WATCHDOG_HANDLE_BOOT_ENABLED=y
+CONFIG_BCM7038_WDT=y
 # CONFIG_RTC_CLASS is not set
 # CONFIG_DMADEVICES is not set
 # CONFIG_ACCESSIBILITY is not set
@@ -511,6 +515,12 @@ CONFIG_BCM6345_L1_IRQ=y
 CONFIG_BCM7038_L1_IRQ=y
 CONFIG_BCM7120_L2_IRQ=y
 CONFIG_BRCMSTB_L2_IRQ=y
+
+# ---- Disable IRQ forced threading ----
+# With this enabled, the 8250 TX interrupt handler gets threaded
+# and can deadlock on port->lock, preventing userspace write()
+# output from ever reaching the UART hardware.
+# CONFIG_IRQ_FORCED_THREADING is not set
 KCONFIG
 
 # Reconcile config (resolve dependencies, set defaults for new options)

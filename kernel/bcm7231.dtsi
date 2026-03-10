@@ -128,16 +128,36 @@
 			syscon = <&sun_top_ctrl 0x304 0x308>;
 		};
 
-		/* UARTs at 0x10406900/940/980 (from dmesg: serial8250) */
-		/* IRQs 65/66/67 from vendor kernel dmesg */
+		/*
+		 * Watchdog: bcm7038-wdt at 0x104066a8
+		 * Same address as BCM7362 (matching UPG register layout).
+		 * CFE enables a ~10s hardware watchdog; without this driver,
+		 * Linux cannot pet/disable it and the box reboots.
+		 */
+		watchdog: watchdog@4066a8 {
+			compatible = "brcm,bcm7038-wdt";
+			reg = <0x4066a8 0x14>;
+			clocks = <&upg_clk>;
+			status = "disabled";
+		};
+
+			/*
+		 * UARTs at 0x10406900/940/980 (from dmesg: serial8250)
+		 *
+		 * Interrupts intentionally omitted to force timer-based
+		 * polled TX mode.  The periph_intc / IRQ_FORCED_THREADING
+		 * combination causes the 8250 TX interrupt path to
+		 * never fire, leaving userspace write() data stuck in the
+		 * circular buffer.  Without an IRQ the 8250 driver falls
+		 * back to a polling timer that reliably drains the buffer.
+		 * (Same pattern used for the NAND controller above.)
+		 */
 		uart0: serial@406900 {
 			compatible = "ns16550a";
 			reg = <0x406900 0x20>;
 			reg-io-width = <0x4>;
 			reg-shift = <0x2>;
 			native-endian;
-			interrupt-parent = <&periph_intc>;
-			interrupts = <65>;
 			clocks = <&uart_clk>;
 			status = "disabled";
 		};
@@ -148,8 +168,6 @@
 			reg-io-width = <0x4>;
 			reg-shift = <0x2>;
 			native-endian;
-			interrupt-parent = <&periph_intc>;
-			interrupts = <66>;
 			clocks = <&uart_clk>;
 			status = "disabled";
 		};
@@ -160,8 +178,6 @@
 			reg-io-width = <0x4>;
 			reg-shift = <0x2>;
 			native-endian;
-			interrupt-parent = <&periph_intc>;
-			interrupts = <67>;
 			clocks = <&uart_clk>;
 			status = "disabled";
 		};

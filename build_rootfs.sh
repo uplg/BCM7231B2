@@ -15,6 +15,8 @@ ORIGINAL="$BASEDIR/rootfs_extracted/squashfs-root"
 NEWROOT="$BASEDIR/new_rootfs"
 BUSYBOX="$BASEDIR/build_output/busybox"
 DROPBEAR="$BASEDIR/build_output/dropbearmulti"
+INIT_TEST="$BASEDIR/build_output/init_test"
+INIT_RAW="$BASEDIR/build_output/init_raw"
 OUTPUT="$BASEDIR/new_rootfs.squashfs"
 
 RED='\033[0;31m'
@@ -29,6 +31,11 @@ err()   { echo -e "${RED}[!]${NC} $1"; exit 1; }
 [ -d "$ORIGINAL" ] || err "Rootfs original non trouve: $ORIGINAL"
 [ -f "$DROPBEAR" ] || err "Dropbear non trouve: $DROPBEAR"
 [ -f "$BUSYBOX" ] || err "BusyBox non trouve: $BUSYBOX (run ./build_busybox.sh first)"
+
+# init_test is optional — only included if built
+if [ -f "$INIT_TEST" ]; then
+    info "init_test found — will include diagnostic init"
+fi
 
 # Nettoyage
 rm -rf "$NEWROOT"
@@ -117,6 +124,21 @@ ln -sf ../sbin/dropbearmulti dbclient
 ln -sf ../sbin/dropbearmulti ssh
 ln -sf ../sbin/dropbearmulti scp
 cd "$BASEDIR"
+
+# =============================================================================
+# 5.5. Diagnostic inits — optional
+# Prefer init_raw (no libc) over init_test (musl) if both exist.
+# Installed as /sbin/init_test so existing kernel bootargs work.
+# =============================================================================
+if [ -f "$INIT_RAW" ]; then
+    info "Installation de init_raw as /sbin/init_test (raw syscall diagnostic)..."
+    cp "$INIT_RAW" "$NEWROOT/sbin/init_test"
+    chmod 755 "$NEWROOT/sbin/init_test"
+elif [ -f "$INIT_TEST" ]; then
+    info "Installation de init_test (diagnostic)..."
+    cp "$INIT_TEST" "$NEWROOT/sbin/init_test"
+    chmod 755 "$NEWROOT/sbin/init_test"
+fi
 
 # =============================================================================
 # 6. Fichiers de configuration
@@ -265,10 +287,6 @@ hostname frog-hack
 echo "[init] Configuring loopback..."
 ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
 
-# --- Charger le module Broadcom Nexus (necessaire pour le hardware) ---
-echo "[init] Loading Broadcom Nexus module..."
-modprobe nexus 2>/dev/null || echo "[init] WARNING: nexus module not loaded"
-
 # --- Syslog ---
 echo "[init] Starting syslog..."
 syslogd -C1024
@@ -279,21 +297,18 @@ echo "[init] Configuring network..."
 # Activer l'interface ethernet
 ifconfig eth0 up 2>/dev/null
 
-# Tenter DHCP (timeout 10 secondes)
-echo "[init] Requesting DHCP lease..."
+# Static fallback IP (for direct-ethernet development without DHCP)
+echo "[init] Setting static IP 192.168.2.1 as fallback..."
+ifconfig eth0 192.168.2.1 netmask 255.255.255.0 up 2>/dev/null
+
+# Tenter DHCP en arriere-plan (remplacera l'IP statique si un serveur DHCP repond)
+echo "[init] Requesting DHCP lease (background)..."
 udhcpc -i eth0 -t 5 -T 2 -n -q -s /etc/network/udhcpc.script 2>/dev/null &
 
-# Attendre un peu pour l'IP
-sleep 3
-
-# Afficher l'IP obtenue
+# Afficher l'IP
+sleep 1
 IP=$(ifconfig eth0 2>/dev/null | grep "inet addr" | awk -F: '{print $2}' | awk '{print $1}')
-if [ -n "$IP" ]; then
-    echo "[init] Network up: $IP"
-else
-    echo "[init] WARNING: No IP obtained, retrying in background..."
-    udhcpc -i eth0 -t 10 -T 3 -b -s /etc/network/udhcpc.script 2>/dev/null &
-fi
+echo "[init] Network up: ${IP:-192.168.2.1}"
 
 # --- Monter la cle USB si presente (avant SSH pour charger les cles persistantes) ---
 if [ -e /dev/sda1 ]; then

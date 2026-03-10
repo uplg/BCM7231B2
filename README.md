@@ -234,3 +234,19 @@ Linux 6.18.16 LTS — aggressively minimal for < 7 MB ELF:
 - **IRQ 71 spurious interrupt** from OHCI — non-blocking, IRQ auto-disabled
 - **`brcm-gisb-arb: error -ENXIO: IRQ index 2 not found`** — cosmetic, driver works with 2/3 IRQs
 - **10-second hardware watchdog** set by CFE — clear with `setenv -p STARTUP ""`
+
+# Rebuild rootfs + squashfs (Docker)
+./build_rootfs.sh
+# Puis le mksquashfs (la commande exacte est affichée à la fin du script)
+# Rebuild kernel (Docker)
+./build_kernel.sh
+# Copier les deux fichiers dans le dossier TFTP
+sudo cp build_output/vmlinux /private/tftpboot/vmlinux
+sudo cp new_rootfs.squashfs /private/tftpboot/new_rootfs.squashfs
+# S'assurer que le serveur TFTP tourne
+sudo launchctl load -F /System/Library/LaunchDaemons/tftp.plist
+Côté CFE (Ctrl+C au boot pour interrompre) :
+CFE> ifconfig eth0 -addr=192.168.2.1 -mask=255.255.255.0 -gw=192.168.2.2
+CFE> flash 192.168.2.2:new_rootfs.squashfs nandflash0.rootfs -noheader
+CFE> flash 192.168.2.2:vmlinux nandflash0.kernel -noheader
+CFE> boot nandflash0.kernel:

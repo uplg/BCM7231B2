@@ -15,7 +15,7 @@
 	};
 
 	chosen {
-		bootargs = "console=ttyS0,115200 root=/dev/mtdblock5 rootfstype=squashfs ro init=/bin/sh";
+		bootargs = "console=ttyS0,115200 root=/dev/mtdblock5 rootfstype=squashfs ro init=/sbin/init";
 		stdout-path = &uart0;
 	};
 };
@@ -113,5 +113,9 @@
 };
 
 &sata_phy {
+	status = "okay";
+};
+
+&watchdog {
 	status = "okay";
 };
