@@ -244,15 +244,22 @@
 			interrupts = <30>;
 		};
 
-		/* NAND: brcmnand at 0x10412800, IRQ 31 via hif_l2 */
+		/*
+		 * NAND: brcmnand-v5.0 at 0x10412800
+		 *
+		 * Interrupt intentionally omitted to force polling mode.
+		 * The hif_l2_intc is edge-triggered and CFE leaves the
+		 * NAND controller with CTLRDY asserted, causing the
+		 * first command's completion edge to be lost ~50% of boots.
+		 * Polling mode is reliable and has negligible overhead for
+		 * a 128MB NAND.
+		 */
 		nand: nand@412800 {
 			compatible = "brcm,brcmnand-v5.0", "brcm,brcmnand";
 			#address-cells = <1>;
 			#size-cells = <0>;
 			reg-names = "nand";
 			reg = <0x412800 0x400>;
-			interrupt-parent = <&hif_l2_intc>;
-			interrupts = <24>;
 			status = "disabled";
 		};
 
