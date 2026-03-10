@@ -1,0 +1,18 @@
+# Build output (kernel, busybox, binaries, logs)
+build_output/
+
+# Assembled rootfs tree and squashfs image
+new_rootfs/
+new_rootfs.squashfs
+
+# Extracted stock firmware rootfs (~143 MB)
+rootfs_extracted/
+
+# Full MTD backup from device (~124 MB)
+backup/
+
+# Build logs
+logs/
+
+# macOS
+.DS_Store

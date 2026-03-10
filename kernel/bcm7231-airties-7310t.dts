@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: GPL-2.0
+/dts-v1/;
+
+#include "bcm7231.dtsi"
+
+/ {
+	compatible = "airties,air7310t", "brcm,bcm7231";
+	model = "AirTies AIR 7310T";
+
+	memory@0 {
+		device_type = "memory";
+		/* 256 MB at 0x00000000 + 256 MB at 0x20000000 */
+		reg = <0x00000000 0x10000000>,
+		      <0x20000000 0x10000000>;
+	};
+
+	chosen {
+		bootargs = "console=ttyS0,115200 root=/dev/mtdblock5 rootfstype=squashfs ro init=/bin/sh";
+		stdout-path = &uart0;
+	};
+};
+
+&uart0 {
+	status = "okay";
+};
+
+&uart1 {
+	status = "okay";
+};
+
+&uart2 {
+	status = "okay";
+};
+
+&enet0 {
+	status = "okay";
+};
+
+&ehci0 {
+	status = "okay";
+};
+
+&ohci0 {
+	status = "okay";
+};
+
+&ehci1 {
+	status = "okay";
+};
+
+&ohci1 {
+	status = "okay";
+};
+
+&nand {
+	status = "okay";
+
+	nandcs@0 {
+		compatible = "brcm,nandcs";
+		reg = <0>;
+		nand-on-flash-bbt;
+
+		nand-ecc-strength = <1>;
+		nand-ecc-step-size = <512>;
+		brcm,nand-oob-sector-size = <16>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "CFE";
+				reg = <0x00000000 0x00200000>;
+				read-only;
+			};
+
+			partition@200000 {
+				label = "ENV";
+				reg = <0x00200000 0x00100000>;
+			};
+
+			partition@300000 {
+				label = "ConfigFS";
+				reg = <0x00300000 0x00600000>;
+			};
+
+			partition@900000 {
+				label = "Reserve";
+				reg = <0x00900000 0x00a00000>;
+			};
+
+			partition@1300000 {
+				label = "Kernel";
+				reg = <0x01300000 0x00700000>;
+			};
+
+			partition@1a00000 {
+				label = "RootFS";
+				reg = <0x01a00000 0x04600000>;
+			};
+
+			partition@6000000 {
+				label = "Recovery";
+				reg = <0x06000000 0x01c00000>;
+			};
+		};
+	};
+};
+
+&sata {
+	status = "okay";
+};
+
+&sata_phy {
+	status = "okay";
+};
