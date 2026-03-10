@@ -144,13 +144,12 @@
 			/*
 		 * UARTs at 0x10406900/940/980 (from dmesg: serial8250)
 		 *
-		 * Interrupts intentionally omitted to force timer-based
-		 * polled TX mode.  The periph_intc / IRQ_FORCED_THREADING
-		 * combination causes the 8250 TX interrupt path to
-		 * never fire, leaving userspace write() data stuck in the
-		 * circular buffer.  Without an IRQ the 8250 driver falls
-		 * back to a polling timer that reliably drains the buffer.
-		 * (Same pattern used for the NAND controller above.)
+		 * Interrupts MUST be omitted — even with IRQ_FORCED_THREADING
+		 * disabled, the 8250 TX interrupt path fails on this SoC
+		 * (periph_intc never delivers THRI to the 8250 handler).
+		 * Without an IRQ the driver uses timer-based polling for
+		 * both TX and RX.  RX overruns on fast paste are tolerable;
+		 * no TX output at all is not.
 		 */
 		uart0: serial@406900 {
 			compatible = "ns16550a";
@@ -204,8 +203,6 @@
 				phy1: ethernet-phy@1 {
 					max-speed = <100>;
 					reg = <0x1>;
-					compatible = "brcm,40nm-ephy",
-						"ethernet-phy-ieee802.3-c22";
 				};
 			};
 		};

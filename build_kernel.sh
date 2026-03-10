@@ -85,6 +85,36 @@ config DT_BCM7231_AIRTIES\\
 ' arch/mips/bmips/Kconfig
 fi
 
+# --- Patch: Add BCM7231 internal PHY (0x600d8690) to bcm7xxx driver ---
+# The BCM7231's internal EPHY has PHY ID 0x600d8691 (masked: 0x600d8690)
+# which is not in upstream Linux. It's a 40nm EPHY like BCM7346/7362/7425.
+echo '    Patching bcm7xxx PHY driver for BCM7231...'
+
+# Add PHY_ID define to brcmphy.h (after BCM7362)
+sed -i '/#define PHY_ID_BCM7362/a\\
+#define PHY_ID_BCM7231\t\t\t0x600d8690' include/linux/brcmphy.h
+
+# Add driver entry in bcm7xxx.c (after BCM7362 in the driver array)
+sed -i '/BCM7XXX_40NM_EPHY(PHY_ID_BCM7362/a\\
+\tBCM7XXX_40NM_EPHY(PHY_ID_BCM7231, \"Broadcom BCM7231\"),' drivers/net/phy/bcm7xxx.c
+
+# Add device table entry in bcm7xxx.c (after BCM7362 in mdio_device_id table)
+sed -i '/PHY_ID_BCM7362, 0xfffffff0/a\\
+\t{ PHY_ID_BCM7231, 0xfffffff0, },' drivers/net/phy/bcm7xxx.c
+
+# Verify patches applied
+echo '    Verifying patches...'
+grep -n 'BCM7231' include/linux/brcmphy.h
+grep -n 'BCM7231' drivers/net/phy/bcm7xxx.c
+
+# --- Patch: Faster UART poll timer for reduced RX overruns ---
+# Without IRQs, the 8250 driver polls via a timer. The default interval
+# is ~8ms at 115200 baud which causes input overruns on fast paste.
+# Force 1 jiffy (1ms at HZ=1000) polling for responsive RX.
+echo '    Patching uart_poll_timeout for 1ms polling...'
+sed -i 's/return timeout > 6 ? (timeout \/ 2 - 2) : 1;/return 1; \/* FROG-HACK: 1ms poll for no-IRQ UART *\//' include/linux/serial_core.h
+grep -n 'FROG-HACK' include/linux/serial_core.h
+
 echo '[5/7] Configuring kernel...'
 export ARCH=mips
 export CROSS_COMPILE=\${CROSS}-
@@ -532,6 +562,9 @@ make -j\$(nproc) vmlinux 2>&1 | tee /tmp/kernel_build.log | tail -50
 if [ \${PIPESTATUS[0]} -ne 0 ]; then
     echo ''
     echo '!!! BUILD FAILED !!!'
+    echo 'Actual errors:'
+    grep -i 'error:' /tmp/kernel_build.log | head -30
+    echo ''
     echo 'Last 100 lines of build log:'
     tail -100 /tmp/kernel_build.log
     exit 1

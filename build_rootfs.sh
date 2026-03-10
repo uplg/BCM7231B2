@@ -76,7 +76,7 @@ done
 
 # Liens dans /sbin
 cd "$NEWROOT/sbin"
-for applet in init halt ifconfig ifdown ifup ip klogd modprobe mount \
+for applet in init halt getty ifconfig ifdown ifup ip klogd modprobe mount \
     pivot_root poweroff reboot route start-stop-daemon swapoff swapon \
     switch_root sysctl syslogd udhcpc umount; do
     ln -sf ../bin/busybox "$applet" 2>/dev/null || true
@@ -260,114 +260,31 @@ info "Creation des scripts d'init..."
 cat > "$NEWROOT/etc/init.d/rcS" << 'INITSCRIPT'
 #!/bin/sh
 # =============================================================================
-# FROG-HACK - Init script
-# AirTies AIR 7310T - Custom minimal firmware
+# FROG-HACK - Minimal diagnostic init script
+# Just mount essential filesystems and get out of the way.
+# Getty on ttyS0 (from inittab) provides the interactive shell.
 # =============================================================================
 
-echo "[init] Starting FROG-HACK system..."
+echo "[init] Starting FROG-HACK (minimal)..."
 
-# --- Montage des filesystems virtuels ---
-echo "[init] Mounting filesystems..."
+# --- Mount essential virtual filesystems ---
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
-mount -t devtmpfs devtmpfs /dev
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
 mkdir -p /dev/pts /dev/shm
 mount -t devpts devpts /dev/pts
 mount -t tmpfs tmpfs /dev/shm
 mount -t tmpfs -o size=10M tmpfs /tmp
 mount -t tmpfs -o size=2M tmpfs /var
-
-# Creer les repertoires dans /var (tmpfs)
 mkdir -p /var/run /var/log /var/tmp /var/lib
 
 # --- Hostname ---
 hostname frog-hack
 
 # --- Loopback ---
-echo "[init] Configuring loopback..."
 ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
 
-# --- Syslog ---
-echo "[init] Starting syslog..."
-syslogd -C1024
-klogd
-
-# --- Reseau ---
-echo "[init] Configuring network..."
-# Activer l'interface ethernet
-ifconfig eth0 up 2>/dev/null
-
-# Static fallback IP (for direct-ethernet development without DHCP)
-echo "[init] Setting static IP 192.168.2.1 as fallback..."
-ifconfig eth0 192.168.2.1 netmask 255.255.255.0 up 2>/dev/null
-
-# Tenter DHCP en arriere-plan (remplacera l'IP statique si un serveur DHCP repond)
-echo "[init] Requesting DHCP lease (background)..."
-udhcpc -i eth0 -t 5 -T 2 -n -q -s /etc/network/udhcpc.script 2>/dev/null &
-
-# Afficher l'IP
-sleep 1
-IP=$(ifconfig eth0 2>/dev/null | grep "inet addr" | awk -F: '{print $2}' | awk '{print $1}')
-echo "[init] Network up: ${IP:-192.168.2.1}"
-
-# --- Monter la cle USB si presente (avant SSH pour charger les cles persistantes) ---
-if [ -e /dev/sda1 ]; then
-    echo "[init] USB drive detected, mounting..."
-    mkdir -p /mnt/usb
-    mount /dev/sda1 /mnt/usb 2>/dev/null && echo "[init] USB mounted on /mnt/usb"
-fi
-
-# --- SSH (Dropbear) ---
-echo "[init] Starting SSH server..."
-# SquashFS is read-only so /etc/dropbear cannot be written to.
-# Use /var/lib/dropbear (tmpfs) for runtime keys.
-# If USB has persistent keys at /mnt/usb/frog-hack/dropbear/, use those.
-DBKEYDIR="/var/lib/dropbear"
-mkdir -p "$DBKEYDIR"
-
-USB_KEYS="/mnt/usb/frog-hack/dropbear"
-if [ -d "$USB_KEYS" ] && [ -f "$USB_KEYS/dropbear_rsa_host_key" ]; then
-    echo "[init] Loading SSH host keys from USB..."
-    cp "$USB_KEYS"/dropbear_*_host_key "$DBKEYDIR/" 2>/dev/null
-fi
-
-# Generate keys if not loaded from USB
-if [ ! -f "$DBKEYDIR/dropbear_rsa_host_key" ]; then
-    echo "[init] Generating SSH host keys (ephemeral - will change on reboot)..."
-    dropbearkey -t rsa -f "$DBKEYDIR/dropbear_rsa_host_key" -s 2048 2>/dev/null
-fi
-if [ ! -f "$DBKEYDIR/dropbear_ed25519_host_key" ]; then
-    dropbearkey -t ed25519 -f "$DBKEYDIR/dropbear_ed25519_host_key" 2>/dev/null
-fi
-
-# Persist keys to USB if mounted and not already saved
-if [ -d /mnt/usb ] && [ ! -d "$USB_KEYS" ]; then
-    echo "[init] Saving SSH host keys to USB for persistence..."
-    mkdir -p "$USB_KEYS"
-    cp "$DBKEYDIR"/dropbear_*_host_key "$USB_KEYS/" 2>/dev/null
-fi
-
-# Start dropbear with custom key directory
-dropbear -r "$DBKEYDIR/dropbear_rsa_host_key" -r "$DBKEYDIR/dropbear_ed25519_host_key" -p 22
-
-# --- Telnet (backup) ---
-echo "[init] Starting telnet..."
-telnetd -F -l /bin/login &
-
-# --- Serveur web (BusyBox httpd) ---
-echo "[init] Starting web server on port 80..."
-mkdir -p /usr/share/www
-httpd -p 80 -h /usr/share/www
-
-# --- Infos systeme ---
-echo ""
-echo "============================================"
-echo "  FROG-HACK ready!"
-echo "  IP: $(ifconfig eth0 2>/dev/null | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}')"
-echo "  SSH:    port 22"
-echo "  Telnet: port 23"
-echo "  HTTP:   port 80"
-echo "============================================"
+echo "[init] Filesystems mounted. Handing off to getty on ttyS0."
 echo ""
 INITSCRIPT
 chmod 755 "$NEWROOT/etc/init.d/rcS"
