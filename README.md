@@ -34,40 +34,6 @@ RootFS      0x01a00000   70 MB   mtd5   SquashFS root filesystem
 Recovery    0x06000000   28 MB   mtd6   Recovery image
 ```
 
-## Project Structure
-
-```
-frog-hack/
-  README.md                          # This file
-  build_busybox.sh                   # Docker: BusyBox 1.37.0 static musl MIPS32 R1
-  build_kernel.sh                    # Docker: Linux 6.18.16 LTS for BCM7231
-  build_rootfs.sh                    # Assemble minimal rootfs (all-static, no glibc)
-  build_dropbear.sh                  # Docker: Dropbear SSH static musl
-  build_mtdutils.sh                  # Docker: flash_erase + nandwrite static
-  flash_rootfs.sh                    # Run ON DEVICE: flash rootfs to mtd5
-  restore_rootfs.sh                  # Run ON DEVICE: restore original rootfs
-  kernel/
-    bcm7231.dtsi                     # SoC device tree (adapted from BCM7362)
-    bcm7231-airties-7310t.dts        # Board device tree
-  build_output/
-    vmlinux                          # Kernel ELF (~6.2 MB) — flash to mtd4
-    busybox                          # BusyBox 1.37.0 static (~1.6 MB)
-    dropbearmulti                    # Dropbear SSH static (~554 KB)
-    flash_erase                      # MTD erase tool static (~137 KB)
-    nandwrite                        # MTD write tool static (~137 KB)
-    kernel_config                    # Saved kernel .config
-    bb_build.log                     # BusyBox build log
-  new_rootfs/                        # Assembled rootfs directory
-    sbin/init                        # PID 1 shell script (#!/bin/ash)
-    bin/busybox                      # BusyBox 1.37.0 (static, musl)
-    usr/sbin/dropbearmulti           # Dropbear SSH (static, musl)
-    etc/                             # Config files (passwd, shadow, network, etc.)
-    usr/share/www/                   # Web server root
-  new_rootfs.squashfs                # Final SquashFS image — flash to mtd5
-  backup/                            # Full device backup (mtd0-mtd6)
-  rootfs_extracted/squashfs-root/    # Original Wyplay rootfs extracted
-```
-
 ## Toolchain
 
 All binaries target **MIPS32 Release 1** (the BMIPS4380 only supports R1).
@@ -247,10 +213,9 @@ Linux 6.18.16 LTS — aggressively minimal for < 7 MB ELF:
 
 ### Known Issues
 
-- **IRQ 71 spurious interrupt** from OHCI — non-blocking, IRQ auto-disabled
-- **`brcm-gisb-arb: error -ENXIO: IRQ index 2 not found`** — cosmetic, driver works with 2/3 IRQs
-- **10-second hardware watchdog** set by CFE — clear with `setenv -p STARTUP ""`
-- **if these logs don't appear** bcmgenet 10430000.ethernet eth0: FROG-HACK isr1 pre-clear: irq=25 status=0x10000 mask=0xfffeffe0 ethernet isn't working (timing issue.)
+- **if these logs don't appear** : bcmgenet 10430000.ethernet eth0: FROG-HACK isr1 pre-clear: irq=25 status=0x10000 mask=0xfffeffe0 ethernet isn't working (timing issue.)
+
+### Common commands :
 
 # Rebuild rootfs + squashfs (Docker)
 ./build_rootfs.sh
