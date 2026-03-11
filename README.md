@@ -217,17 +217,17 @@ Linux 6.18.16 LTS — aggressively minimal for < 7 MB ELF:
 
 ### Common commands :
 
-# Rebuild rootfs + squashfs (Docker)
+#### Rebuild rootfs + squashfs (Docker)
 ./build_rootfs.sh
-# Then mksquashfs
-# Rebuild kernel (Docker)
+#### Then mksquashfs
+#### Rebuild kernel (Docker)
 ./build_kernel.sh
-# Copy artifacts to TFTP server
+#### Copy artifacts to TFTP server
 sudo cp build_output/vmlinux /private/tftpboot/vmlinux
 sudo cp new_rootfs.squashfs /private/tftpboot/new_rootfs.squashfs
-# Ensure TFTP server running
+#### Ensure TFTP server running
 sudo launchctl load -F /System/Library/LaunchDaemons/tftp.plist
-# CFE connect + flash
+#### CFE connect + flash
 CFE> ifconfig eth0 -addr=192.168.2.1 -mask=255.255.255.0 -gw=192.168.2.2
 CFE> flash 192.168.2.2:new_rootfs.squashfs nandflash0.rootfs -noheader
 CFE> flash 192.168.2.2:vmlinux nandflash0.kernel -noheader
