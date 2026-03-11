@@ -175,7 +175,7 @@ info "Creation des fichiers de configuration..."
 
 # /etc/passwd
 cat > "$NEWROOT/etc/passwd" << 'EOF'
-root::0:0:root:/root:/bin/ash
+root:x:0:0:root:/root:/bin/ash
 daemon:x:1:1:daemon:/usr/sbin:/bin/false
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false
 sshd:x:22:22:sshd:/var/run/sshd:/bin/false
@@ -183,10 +183,10 @@ EOF
 
 # /etc/shadow (root sans password, login via SSH key ou telnet)
 cat > "$NEWROOT/etc/shadow" << 'EOF'
-root:::0:99999:7:::
-daemon:*:0:0:99999:7:::
-nobody:*:0:0:99999:7:::
-sshd:*:0:0:99999:7:::
+root:$6$froghack$h0z5DNs9Bz698W.NvMHAtEP/FFoVxkd9vNriq9NatHS5XpYV.0LhxhnsdbD2Krl5Qqo8R7nZAsK5BiSktpfbi0:0:0:99999:7:::
+daemon:x:1:1:daemon:/usr/sbin:/bin/false
+nobody:x:65534:65534:nobody:/nonexistent:/bin/false
+sshd:x:22:22:sshd:/var/run/sshd:/bin/false
 EOF
 chmod 640 "$NEWROOT/etc/shadow"
 
