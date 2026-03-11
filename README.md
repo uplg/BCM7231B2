@@ -229,6 +229,9 @@ sudo cp new_rootfs.squashfs /private/tftpboot/new_rootfs.squashfs
 sudo launchctl load -F /System/Library/LaunchDaemons/tftp.plist
 #### CFE connect + flash
 CFE> ifconfig eth0 -addr=192.168.2.1 -mask=255.255.255.0 -gw=192.168.2.2
+
 CFE> flash 192.168.2.2:new_rootfs.squashfs nandflash0.rootfs -noheader
+
 CFE> flash 192.168.2.2:vmlinux nandflash0.kernel -noheader
+
 CFE> boot nandflash0.kernel:
