@@ -247,6 +247,10 @@ export EDITOR=vi
 alias ll='ls -la'
 alias la='ls -A'
 
+if [ -x /etc/init.d/rcServices ] && [ ! -f /var/run/rcServices.started ]; then
+    /etc/init.d/rcServices >/dev/null 2>&1 &
+fi
+
 echo ""
 echo "  FROG-HACK"
 echo "  AirTies AIR 7310T"
@@ -375,6 +379,54 @@ echo "============================================"
 echo ""
 INITSCRIPT
 chmod 755 "$NEWROOT/etc/init.d/rcS"
+
+# Deferred service start (network-sensitive)
+cat > "$NEWROOT/etc/init.d/rcServices" << 'SERVICESCRIPT'
+#!/bin/sh
+
+[ -f /var/run/rcServices.started ] && exit 0
+touch /var/run/rcServices.started
+
+syslogd -C256
+klogd
+
+USB_MOUNT=
+if [ -e /dev/sda1 ]; then
+    mkdir -p /mnt/usb
+    if mount /dev/sda1 /mnt/usb 2>/dev/null; then
+        USB_MOUNT=/mnt/usb
+    fi
+fi
+
+DBKEYDIR="/var/lib/dropbear"
+mkdir -p "$DBKEYDIR"
+
+if [ -n "$USB_MOUNT" ] && [ -d "$USB_MOUNT/frog-hack/dropbear" ]; then
+    cp "$USB_MOUNT"/frog-hack/dropbear/dropbear_*_host_key "$DBKEYDIR"/ 2>/dev/null || true
+fi
+
+if [ ! -f "$DBKEYDIR/dropbear_rsa_host_key" ] && [ -x /usr/sbin/dropbearkey ]; then
+    /usr/sbin/dropbearkey -t rsa -f "$DBKEYDIR/dropbear_rsa_host_key" >/dev/null 2>&1
+fi
+
+if [ ! -f "$DBKEYDIR/dropbear_ed25519_host_key" ] && [ -x /usr/sbin/dropbearkey ]; then
+    /usr/sbin/dropbearkey -t ed25519 -f "$DBKEYDIR/dropbear_ed25519_host_key" >/dev/null 2>&1
+fi
+
+if [ -n "$USB_MOUNT" ]; then
+    mkdir -p "$USB_MOUNT/frog-hack/dropbear"
+    cp "$DBKEYDIR"/dropbear_*_host_key "$USB_MOUNT"/frog-hack/dropbear/ 2>/dev/null || true
+fi
+
+if [ -x /usr/sbin/dropbear ]; then
+    /usr/sbin/dropbear -r "$DBKEYDIR/dropbear_rsa_host_key" -r "$DBKEYDIR/dropbear_ed25519_host_key"
+fi
+
+if [ -x /usr/sbin/httpd ]; then
+    /usr/sbin/httpd -p 80 -h /usr/share/www
+fi
+SERVICESCRIPT
+chmod 755 "$NEWROOT/etc/init.d/rcServices"
 
 # Script d'arret
 cat > "$NEWROOT/etc/init.d/rcK" << 'STOPSCRIPT'
