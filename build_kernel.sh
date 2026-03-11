@@ -36,6 +36,7 @@ echo ""
 docker run --rm --platform linux/amd64 \
     -v "$OUTDIR:/output" \
     -v "$KERNELDIR:/dts:ro" \
+    -v "$KERNELDIR/patch_bcmgenet_debug.py:/patch_bcmgenet_debug.py:ro" \
     ubuntu:22.04 bash -c "
 set -e
 export DEBIAN_FRONTEND=noninteractive
@@ -107,13 +108,38 @@ echo '    Verifying patches...'
 grep -n 'BCM7231' include/linux/brcmphy.h
 grep -n 'BCM7231' drivers/net/phy/bcm7xxx.c
 
-# --- Patch: Faster UART poll timer for reduced RX overruns ---
-# Without IRQs, the 8250 driver polls via a timer. The default interval
-# is ~8ms at 115200 baud which causes input overruns on fast paste.
-# Force 1 jiffy (1ms at HZ=1000) polling for responsive RX.
-echo '    Patching uart_poll_timeout for 1ms polling...'
-sed -i 's/return timeout > 6 ? (timeout \/ 2 - 2) : 1;/return 1; \/* FROG-HACK: 1ms poll for no-IRQ UART *\//' include/linux/serial_core.h
-grep -n 'FROG-HACK' include/linux/serial_core.h
+# --- Patch: Force PHY polling mode instead of MAC interrupt ---
+# The upstream driver sets phydev->irq = PHY_MAC_INTERRUPT for internal PHYs
+# on non-V5 GENET. This relies on the MAC delivering link interrupts via
+# phy_mac_interrupt(). On BCM7231 (GENET v2), the MAC does not generate
+# link-change interrupts — this is a known limitation of GENET v2 (not
+# related to the L2 interrupt controller).  MDIO polling works perfectly
+# (ephy_diag confirmed BMSR=0x782D = link up), so force PHY_POLL.
+echo '    Patching bcmmii.c to force PHY polling mode...'
+sed -i 's/dev->phydev->irq = PHY_MAC_INTERRUPT;/dev->phydev->irq = PHY_POLL; \/* FROG-HACK: force polling, MAC IRQ broken on BCM7231 *\//' drivers/net/ethernet/broadcom/genet/bcmmii.c
+grep -n 'FROG-HACK' drivers/net/ethernet/broadcom/genet/bcmmii.c
+
+# --- Patch: Skip EEE on GENET v1/v2 (registers don't exist, cause GISB bus error) ---
+# bcmgenet_eee_enable_set() reads RBUF_ENERGY_CTRL (RBUF+0x9C) and
+# TBUF_ENERGY_CTRL which don't exist on GENET v2. This causes a fatal
+# GISB bus error at 0x1043039c when phylib detects link and calls
+# bcmgenet_mac_config() -> bcmgenet_eee_enable_set().
+# Also guard bcmgenet_get_eee/set_eee (already returns -EOPNOTSUPP for V1,
+# but not for V2).
+echo '    Patching bcmgenet.c to skip EEE on GENET v1/v2...'
+sed -i '/bcmgenet_eee_enable_set.*bool enable/,/u32 off = priv->hw_params->tbuf_offset/{
+  s/u32 off = priv->hw_params->tbuf_offset/if (GENET_IS_V1(priv) || GENET_IS_V2(priv)) return; \/* FROG-HACK: no EEE on v1\/v2 *\/\n\tu32 off = priv->hw_params->tbuf_offset/
+}' drivers/net/ethernet/broadcom/genet/bcmgenet.c
+grep -n 'FROG-HACK' drivers/net/ethernet/broadcom/genet/bcmgenet.c
+
+# --- Patch: Add temporary GENET v2 IRQ/DMA debug instrumentation ---
+# We now know link comes up, but TX queue 3 times out with zero eth0 IRQ counts.
+# Add explicit logs around probe/open/ISR/timeout so we can tell whether the
+# problem is bad IRQ routing or DMA descriptors not completing.
+echo '    Patching bcmgenet.c for IRQ/DMA watchdog debug...'
+python3 /patch_bcmgenet_debug.py
+
+grep -n 'FROG-HACK' drivers/net/ethernet/broadcom/genet/bcmgenet.c
 
 echo '[5/7] Configuring kernel...'
 export ARCH=mips
@@ -546,11 +572,11 @@ CONFIG_BCM7038_L1_IRQ=y
 CONFIG_BCM7120_L2_IRQ=y
 CONFIG_BRCMSTB_L2_IRQ=y
 
-# ---- Disable IRQ forced threading ----
-# With this enabled, the 8250 TX interrupt handler gets threaded
-# and can deadlock on port->lock, preventing userspace write()
-# output from ever reaching the UART hardware.
-# CONFIG_IRQ_FORCED_THREADING is not set
+# ---- IRQ forced threading ----
+# Previously disabled because UART IRQs were broken (L2 mask bug).
+# Now that upg_irq0_intc has the correct int-map-mask, UART IRQs
+# are delivered properly and threaded handlers work fine.
+# Leave at kernel default (enabled via PREEMPT config).
 KCONFIG
 
 # Reconcile config (resolve dependencies, set defaults for new options)

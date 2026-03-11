@@ -17,6 +17,10 @@ BUSYBOX="$BASEDIR/build_output/busybox"
 DROPBEAR="$BASEDIR/build_output/dropbearmulti"
 INIT_TEST="$BASEDIR/build_output/init_test"
 INIT_RAW="$BASEDIR/build_output/init_raw"
+IRQ_DUMP="$BASEDIR/build_output/irq_dump"
+EPHY_INIT="$BASEDIR/build_output/ephy_init"
+EPHY_DIAG="$BASEDIR/build_output/ephy_diag"
+GENET_DUMP="$BASEDIR/build_output/genet_dump"
 OUTPUT="$BASEDIR/new_rootfs.squashfs"
 
 RED='\033[0;31m'
@@ -138,6 +142,32 @@ elif [ -f "$INIT_TEST" ]; then
     info "Installation de init_test (diagnostic)..."
     cp "$INIT_TEST" "$NEWROOT/sbin/init_test"
     chmod 755 "$NEWROOT/sbin/init_test"
+fi
+
+# irq_dump — L1/L2 interrupt controller register dump tool
+if [ -f "$IRQ_DUMP" ]; then
+    info "Installation de irq_dump (IRQ diagnostic)..."
+    cp "$IRQ_DUMP" "$NEWROOT/sbin/irq_dump"
+    chmod 755 "$NEWROOT/sbin/irq_dump"
+fi
+
+# ephy/genet diagnostics — optional
+if [ -f "$EPHY_INIT" ]; then
+    info "Installation de ephy_init (GENET/EPHY power-up)..."
+    cp "$EPHY_INIT" "$NEWROOT/sbin/ephy_init"
+    chmod 755 "$NEWROOT/sbin/ephy_init"
+fi
+
+if [ -f "$EPHY_DIAG" ]; then
+    info "Installation de ephy_diag (EPHY diagnostic)..."
+    cp "$EPHY_DIAG" "$NEWROOT/sbin/ephy_diag"
+    chmod 755 "$NEWROOT/sbin/ephy_diag"
+fi
+
+if [ -f "$GENET_DUMP" ]; then
+    info "Installation de genet_dump (GENET snapshot)..."
+    cp "$GENET_DUMP" "$NEWROOT/sbin/genet_dump"
+    chmod 755 "$NEWROOT/sbin/genet_dump"
 fi
 
 # =============================================================================
@@ -265,6 +295,21 @@ cat > "$NEWROOT/etc/init.d/rcS" << 'INITSCRIPT'
 # Getty on ttyS0 (from inittab) provides the interactive shell.
 # =============================================================================
 
+NETLOG=/var/log/net-boot.log
+
+log_msg() {
+    echo "$*"
+    echo "$*" >> "$NETLOG"
+}
+
+run_and_log() {
+    echo "[cmd] $*" >> "$NETLOG"
+    "$@" >> "$NETLOG" 2>&1
+    rc=$?
+    echo "[rc=$rc] $*" >> "$NETLOG"
+    return $rc
+}
+
 echo "[init] Starting FROG-HACK (minimal)..."
 
 # --- Mount essential virtual filesystems ---
@@ -277,6 +322,7 @@ mount -t tmpfs tmpfs /dev/shm
 mount -t tmpfs -o size=10M tmpfs /tmp
 mount -t tmpfs -o size=2M tmpfs /var
 mkdir -p /var/run /var/log /var/tmp /var/lib
+: > "$NETLOG"
 
 # --- Hostname ---
 hostname frog-hack
@@ -284,7 +330,40 @@ hostname frog-hack
 # --- Loopback ---
 ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
 
+log_msg "[init] Running Ethernet diagnostics..."
+
+if [ -x /sbin/genet_dump ]; then
+    run_and_log /sbin/genet_dump snapshot boot-pre-init
+fi
+
+if [ -x /sbin/ephy_init ]; then
+    run_and_log /sbin/ephy_init
+fi
+
+if [ -x /sbin/ephy_diag ]; then
+    run_and_log /sbin/ephy_diag dump
+fi
+
+run_and_log ifconfig eth0 up
+run_and_log ifconfig eth0 192.168.2.1 netmask 255.255.255.0 up
+run_and_log ifconfig eth0
+
+if [ -r /proc/net/dev ]; then
+    echo "[proc] /proc/net/dev" >> "$NETLOG"
+    cat /proc/net/dev >> "$NETLOG" 2>&1
+fi
+
+if [ -r /proc/interrupts ]; then
+    echo "[proc] /proc/interrupts" >> "$NETLOG"
+    cat /proc/interrupts >> "$NETLOG" 2>&1
+fi
+
+if [ -x /sbin/genet_dump ]; then
+    run_and_log /sbin/genet_dump snapshot boot-post-ifconfig
+fi
+
 echo "[init] Filesystems mounted. Handing off to getty on ttyS0."
+echo "[init] Ethernet diagnostics saved to /var/log/net-boot.log"
 echo ""
 INITSCRIPT
 chmod 755 "$NEWROOT/etc/init.d/rcS"

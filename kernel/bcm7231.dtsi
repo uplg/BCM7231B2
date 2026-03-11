@@ -106,7 +106,33 @@
 			compatible = "brcm,bcm7120-l2-intc";
 			reg = <0x406600 0x8>;
 
-			brcm,int-map-mask = <0x44>, <0x7000000>;
+			/*
+			 * int-map-mask: one entry per parent IRQ.
+			 *   Parent 56 (upg_main): 0x4f = bits 0,1,2,3,6
+			 *     bit 0 = UPG Timer
+			 *     bit 1 = UART0 (serial@406900)
+			 *     bit 2 = UART1 (serial@406940)
+			 *     bit 3 = UART2 (serial@406980)
+			 *     bit 6 = IRB/misc
+			 *   Parent 54 (upg_bsc): 0x7000000 = bits 24,25,26
+			 *     BSC/I2C channels
+			 *
+			 * Previous value <0x44> only covered bits 2,6 — all
+			 * three UARTs and the timer were unreachable via L2,
+			 * causing all UART IRQs to be silently dropped.
+			 */
+			brcm,int-map-mask = <0x4f>, <0x7000000>;
+
+			/*
+			 * int-fwd-mask: bits forwarded directly to L1,
+			 * bypassing L2 logic.  The driver permanently masks
+			 * these in the L2 enable register.
+			 *
+			 * 0x70000 = bits 16,17,18 (typically I2C/BSC on
+			 * BCM7231 UPG).  Keep as-is — these are not UARTs
+			 * and the vendor kernel uses direct forwarding for
+			 * BSC channels on some SoCs.
+			 */
 			brcm,int-fwd-mask = <0x70000>;
 
 			interrupt-controller;
@@ -144,12 +170,13 @@
 			/*
 		 * UARTs at 0x10406900/940/980 (from dmesg: serial8250)
 		 *
-		 * Interrupts MUST be omitted — even with IRQ_FORCED_THREADING
-		 * disabled, the 8250 TX interrupt path fails on this SoC
-		 * (periph_intc never delivers THRI to the 8250 handler).
-		 * Without an IRQ the driver uses timer-based polling for
-		 * both TX and RX.  RX overruns on fast paste are tolerable;
-		 * no TX output at all is not.
+		 * Interrupts omitted — the 8250 driver falls back to
+		 * timer-based polling for both TX and RX.
+		 *
+		 * The upg_irq0_intc int-map-mask now covers the UART
+		 * bits (0x4f includes bits 1,2,3) so L2 routing is
+		 * correct, but we keep UARTs in polling mode until
+		 * IRQ delivery is validated on hardware.
 		 */
 		uart0: serial@406900 {
 			compatible = "ns16550a";
@@ -181,7 +208,7 @@
 			status = "disabled";
 		};
 
-		/* Ethernet: bcmgenet at 0x10430000, IRQs 25+26 from /proc/interrupts */
+		/* Ethernet: GENET v2 follows upstream BCM7358/7360 wiring on periph_intc */
 		enet0: ethernet@430000 {
 			phy-mode = "internal";
 			phy-handle = <&phy1>;
@@ -190,7 +217,7 @@
 			#address-cells = <0x1>;
 			#size-cells = <0x1>;
 			reg = <0x430000 0x4c8c>;
-			interrupts = <25>, <26>;
+			interrupts = <24>, <25>;
 			interrupt-parent = <&periph_intc>;
 			status = "disabled";
 
@@ -201,6 +228,7 @@
 				reg = <0xe14 0x8>;
 
 				phy1: ethernet-phy@1 {
+					compatible = "brcm,40nm-ephy", "ethernet-phy-ieee802.3-c22";
 					max-speed = <100>;
 					reg = <0x1>;
 				};

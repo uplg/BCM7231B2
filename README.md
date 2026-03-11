@@ -180,6 +180,50 @@ $USB/nandwrite -p /dev/mtd5 $USB/mtd5_backup.bin
 reboot
 ```
 
+## Ethernet Debug Workflow
+
+For the Linux 6.18 bring-up, the rootfs can now include three small static tools:
+
+- `ephy_init` — replay the vendor BCM7231 GENET/EPHY power-on sequence
+- `ephy_diag` — dump PHY and EXT/UMAC state
+- `genet_dump` — snapshot CLKGEN + GENET + Linux net state in one place
+
+Build them with:
+
+```bash
+./build_ephy_init.sh
+./build_ephy_diag.sh
+./build_genet_dump.sh
+./build_rootfs.sh
+```
+
+On boot, `rcS` now attempts to:
+
+- dump an initial GENET snapshot
+- run `ephy_init`
+- run `ephy_diag dump`
+- bring `eth0` up with `192.168.2.1/24`
+- dump a second GENET snapshot
+
+All output is saved in `/var/log/net-boot.log` on the target.
+
+Useful manual commands on the box:
+
+```bash
+/sbin/genet_dump snapshot manual
+/sbin/genet_dump watch 1 5
+ifconfig eth0
+cat /proc/net/dev
+cat /proc/interrupts
+```
+
+Recommended comparison flow:
+
+1. Boot Linux 6.18 and save `/var/log/net-boot.log`
+2. Trigger a few pings and run `genet_dump snapshot after-ping`
+3. Boot the legacy 3.3 kernel and capture the same register snapshot tool output
+4. Compare `SYS_PORT_CTRL`, `UMAC_CMD`, `UMAC_MODE`, `EXT_PWR_MGMT`, PHY registers, and TX/RX counters
+
 ## CFE Bootloader Reference
 
 | Command | Description |
@@ -250,3 +294,6 @@ CFE> ifconfig eth0 -addr=192.168.2.1 -mask=255.255.255.0 -gw=192.168.2.2
 CFE> flash 192.168.2.2:new_rootfs.squashfs nandflash0.rootfs -noheader
 CFE> flash 192.168.2.2:vmlinux nandflash0.kernel -noheader
 CFE> boot nandflash0.kernel:
+
+
+ ifconfig eth0 192.168.2.1 netmask 255.255.255.0 up
