@@ -137,7 +137,7 @@ CFE> boot nandflash0.kernel:
 
 Linux 6.18 now brings up the BCM7231 internal GENET PHY and Ethernet path with the corrected DTS interrupt wiring.
 
-The following optional static tools are still useful for low-level diagnosis, but they are no longer run automatically at boot:
+The following optional static tools are still useful for low-level diagnosis :
 
 - `ephy_init` — replay the vendor BCM7231 GENET/EPHY power-on sequence
 - `ephy_diag` — dump PHY and EXT/UMAC state
