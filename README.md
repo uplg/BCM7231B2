@@ -82,7 +82,7 @@ All binaries target **MIPS32 Release 1** (the BMIPS4380 only supports R1).
 ### UART Console
 
 ```bash
-screen /dev/cu.usbserial-A6038OZX 115200
+./frog-hack.sh connect
 ```
 
 Parameters: 115200 8N1. Interrupt CFE boot with Ctrl+C for `CFE>` prompt.
@@ -94,8 +94,6 @@ Device:  192.168.2.1
 Mac:     192.168.2.2
 Netmask: 255.255.255.0
 ```
-
-No DHCP server — static IP fallback. SCP requires `-O` flag (Dropbear has no sftp-server).
 
 ## Build & Flash Procedure
 
@@ -169,17 +167,6 @@ CFE> flash 192.168.2.2:mtd5_backup.bin nandflash0.rootfs -noheader
 CFE> boot nandflash0.kernel:
 ```
 
-### From running system
-
-```bash
-mount /dev/sda1 /mnt/usb
-USB="/mnt/usb/frog-hack"
-chmod +x $USB/flash_erase $USB/nandwrite
-$USB/flash_erase /dev/mtd5 0 0
-$USB/nandwrite -p /dev/mtd5 $USB/mtd5_backup.bin
-reboot
-```
-
 ## Ethernet Notes
 
 Linux 6.18 now brings up the BCM7231 internal GENET PHY and Ethernet path with the corrected DTS interrupt wiring.
@@ -247,7 +234,7 @@ Linux 6.18.16 LTS — aggressively minimal for < 7 MB ELF:
 6. Hardened: root password `blabliblou`, telnet disabled
 7. Static IP fallback 192.168.2.1
 
-### Phase 2 — Modern kernel 6.18.16 LTS: IN PROGRESS
+### Phase 2 — Modern kernel 6.18.16 LTS: PARTIAL (clunky ethernet that may not start properly)
 
 1. Created BCM7231 device tree (bcm7231.dtsi + board DTS)
 2. Created Docker-based kernel build script
@@ -257,29 +244,26 @@ Linux 6.18.16 LTS — aggressively minimal for < 7 MB ELF:
 6. Build 3: Added `BRCMNAND_BRCMSTB=y` — broke NAND entirely (reverted)
 7. Built BusyBox 1.37.0 (static musl) to replace old glibc-linked BusyBox
 8. Rebuilt rootfs: all-static, no shared libraries, no kernel modules
-9. **Next**: Build 4 — test with `init=/bin/sh` to isolate init vs binary issue
 
 ### Known Issues
 
 - **IRQ 71 spurious interrupt** from OHCI — non-blocking, IRQ auto-disabled
 - **`brcm-gisb-arb: error -ENXIO: IRQ index 2 not found`** — cosmetic, driver works with 2/3 IRQs
 - **10-second hardware watchdog** set by CFE — clear with `setenv -p STARTUP ""`
+- **if these logs don't appear** bcmgenet 10430000.ethernet eth0: FROG-HACK isr1 pre-clear: irq=25 status=0x10000 mask=0xfffeffe0 ethernet isn't working (timing issue.)
 
 # Rebuild rootfs + squashfs (Docker)
 ./build_rootfs.sh
-# Puis le mksquashfs (la commande exacte est affichée à la fin du script)
+# Then mksquashfs
 # Rebuild kernel (Docker)
 ./build_kernel.sh
-# Copier les deux fichiers dans le dossier TFTP
+# Copy artifacts to TFTP server
 sudo cp build_output/vmlinux /private/tftpboot/vmlinux
 sudo cp new_rootfs.squashfs /private/tftpboot/new_rootfs.squashfs
-# S'assurer que le serveur TFTP tourne
+# Ensure TFTP server running
 sudo launchctl load -F /System/Library/LaunchDaemons/tftp.plist
-Côté CFE (Ctrl+C au boot pour interrompre) :
+# CFE connect + flash
 CFE> ifconfig eth0 -addr=192.168.2.1 -mask=255.255.255.0 -gw=192.168.2.2
 CFE> flash 192.168.2.2:new_rootfs.squashfs nandflash0.rootfs -noheader
 CFE> flash 192.168.2.2:vmlinux nandflash0.kernel -noheader
 CFE> boot nandflash0.kernel:
-
-
- ifconfig eth0 192.168.2.1 netmask 255.255.255.0 up
