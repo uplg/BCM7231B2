@@ -130,9 +130,7 @@ ln -sf ../sbin/dropbearmulti scp
 cd "$BASEDIR"
 
 # =============================================================================
-# 5.5. Diagnostic inits — optional
-# Prefer init_raw (no libc) over init_test (musl) if both exist.
-# Installed as /sbin/init_test so existing kernel bootargs work.
+# 5.5. Optional diagnostic tools
 # =============================================================================
 if [ -f "$INIT_RAW" ]; then
     info "Installation de init_raw as /sbin/init_test (raw syscall diagnostic)..."
@@ -151,7 +149,7 @@ if [ -f "$IRQ_DUMP" ]; then
     chmod 755 "$NEWROOT/sbin/irq_dump"
 fi
 
-# ephy/genet diagnostics — optional
+# ephy/genet diagnostics — optional manual tools
 if [ -f "$EPHY_INIT" ]; then
     info "Installation de ephy_init (GENET/EPHY power-up)..."
     cp "$EPHY_INIT" "$NEWROOT/sbin/ephy_init"
@@ -250,9 +248,9 @@ alias ll='ls -la'
 alias la='ls -A'
 
 echo ""
-echo "  === FROG-HACK ==="
-echo "  AirTies 7310T - Custom Firmware"
-echo "  $(uname -r) @ $(hostname)"
+echo "  FROG-HACK"
+echo "  AirTies AIR 7310T"
+echo "  $(uname -r) on $(hostname)"
 echo ""
 EOF
 
@@ -290,27 +288,13 @@ info "Creation des scripts d'init..."
 cat > "$NEWROOT/etc/init.d/rcS" << 'INITSCRIPT'
 #!/bin/sh
 # =============================================================================
-# FROG-HACK - Minimal diagnostic init script
-# Just mount essential filesystems and get out of the way.
+# FROG-HACK - Service init script
+# Mount essential filesystems, bring up networking, start core services, then
+# hand off to getty.
 # Getty on ttyS0 (from inittab) provides the interactive shell.
 # =============================================================================
 
-NETLOG=/var/log/net-boot.log
-
-log_msg() {
-    echo "$*"
-    echo "$*" >> "$NETLOG"
-}
-
-run_and_log() {
-    echo "[cmd] $*" >> "$NETLOG"
-    "$@" >> "$NETLOG" 2>&1
-    rc=$?
-    echo "[rc=$rc] $*" >> "$NETLOG"
-    return $rc
-}
-
-echo "[init] Starting FROG-HACK (minimal)..."
+echo "[init] Starting FROG-HACK..."
 
 # --- Mount essential virtual filesystems ---
 mount -t proc proc /proc
@@ -322,7 +306,6 @@ mount -t tmpfs tmpfs /dev/shm
 mount -t tmpfs -o size=10M tmpfs /tmp
 mount -t tmpfs -o size=2M tmpfs /var
 mkdir -p /var/run /var/log /var/tmp /var/lib
-: > "$NETLOG"
 
 # --- Hostname ---
 hostname frog-hack
@@ -330,40 +313,65 @@ hostname frog-hack
 # --- Loopback ---
 ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
 
-log_msg "[init] Running Ethernet diagnostics..."
+# --- Ethernet ---
+ifconfig eth0 up 2>/dev/null || true
+ifconfig eth0 192.168.2.1 netmask 255.255.255.0 up 2>/dev/null || true
 
-if [ -x /sbin/genet_dump ]; then
-    run_and_log /sbin/genet_dump snapshot boot-pre-init
+# --- Logging ---
+syslogd -C256
+klogd
+
+# --- Optional persistent storage ---
+USB_MOUNT=
+if [ -e /dev/sda1 ]; then
+    mkdir -p /mnt/usb
+    if mount /dev/sda1 /mnt/usb 2>/dev/null; then
+        USB_MOUNT=/mnt/usb
+    fi
 fi
 
-if [ -x /sbin/ephy_init ]; then
-    run_and_log /sbin/ephy_init
+# --- SSH host keys ---
+DBKEYDIR="/var/lib/dropbear"
+mkdir -p /var/run "$DBKEYDIR"
+
+if [ -n "$USB_MOUNT" ] && [ -d "$USB_MOUNT/frog-hack/dropbear" ]; then
+    cp "$USB_MOUNT"/frog-hack/dropbear/dropbear_*_host_key "$DBKEYDIR"/ 2>/dev/null || true
 fi
 
-if [ -x /sbin/ephy_diag ]; then
-    run_and_log /sbin/ephy_diag dump
+if [ ! -f "$DBKEYDIR/dropbear_rsa_host_key" ] && [ -x /usr/sbin/dropbearkey ]; then
+    echo "[init] Generating Dropbear RSA host key..."
+    /usr/sbin/dropbearkey -t rsa -f "$DBKEYDIR/dropbear_rsa_host_key" >/dev/null 2>&1
 fi
 
-run_and_log ifconfig eth0 up
-run_and_log ifconfig eth0 192.168.2.1 netmask 255.255.255.0 up
-run_and_log ifconfig eth0
-
-if [ -r /proc/net/dev ]; then
-    echo "[proc] /proc/net/dev" >> "$NETLOG"
-    cat /proc/net/dev >> "$NETLOG" 2>&1
+if [ ! -f "$DBKEYDIR/dropbear_ed25519_host_key" ] && [ -x /usr/sbin/dropbearkey ]; then
+    echo "[init] Generating Dropbear Ed25519 host key..."
+    /usr/sbin/dropbearkey -t ed25519 -f "$DBKEYDIR/dropbear_ed25519_host_key" >/dev/null 2>&1
 fi
 
-if [ -r /proc/interrupts ]; then
-    echo "[proc] /proc/interrupts" >> "$NETLOG"
-    cat /proc/interrupts >> "$NETLOG" 2>&1
+if [ -n "$USB_MOUNT" ]; then
+    mkdir -p "$USB_MOUNT/frog-hack/dropbear"
+    cp "$DBKEYDIR"/dropbear_*_host_key "$USB_MOUNT"/frog-hack/dropbear/ 2>/dev/null || true
 fi
 
-if [ -x /sbin/genet_dump ]; then
-    run_and_log /sbin/genet_dump snapshot boot-post-ifconfig
+if [ -x /usr/sbin/dropbear ]; then
+    echo "[init] Starting SSH..."
+    /usr/sbin/dropbear -r "$DBKEYDIR/dropbear_rsa_host_key" -r "$DBKEYDIR/dropbear_ed25519_host_key"
 fi
 
-echo "[init] Filesystems mounted. Handing off to getty on ttyS0."
-echo "[init] Ethernet diagnostics saved to /var/log/net-boot.log"
+if [ -x /usr/sbin/httpd ]; then
+    echo "[init] Starting HTTP..."
+    /usr/sbin/httpd -p 80 -h /usr/share/www
+fi
+
+IP_ADDR=$(ifconfig eth0 2>/dev/null | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}')
+
+echo ""
+echo "============================================"
+echo "  FROG-HACK ready"
+echo "  IP: ${IP_ADDR:-192.168.2.1}"
+echo "  SSH:  port 22"
+echo "  HTTP: port 80"
+echo "============================================"
 echo ""
 INITSCRIPT
 chmod 755 "$NEWROOT/etc/init.d/rcS"
@@ -373,7 +381,6 @@ cat > "$NEWROOT/etc/init.d/rcK" << 'STOPSCRIPT'
 #!/bin/sh
 echo "[shutdown] Stopping services..."
 killall dropbear 2>/dev/null
-killall telnetd 2>/dev/null
 killall httpd 2>/dev/null
 killall syslogd 2>/dev/null
 killall klogd 2>/dev/null
@@ -443,67 +450,131 @@ cat > "$NEWROOT/usr/share/www/index.html" << 'WEBPAGE'
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: 'Courier New', monospace;
-            background: #0a0a0a;
-            color: #00ff41;
+            font-family: Georgia, "Times New Roman", serif;
+            background:
+                radial-gradient(circle at top, rgba(193, 154, 107, 0.18), transparent 35%),
+                linear-gradient(180deg, #f4efe6 0%, #e6dccd 100%);
+            color: #2f2419;
             min-height: 100vh;
             display: flex;
             flex-direction: column;
             align-items: center;
-            padding: 2rem;
+            padding: 2rem 1.25rem 3rem;
         }
-        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; text-shadow: 0 0 10px #00ff41; }
-        .subtitle { color: #888; margin-bottom: 2rem; }
-        .card {
-            background: #111;
-            border: 1px solid #333;
-            border-radius: 8px;
-            padding: 1.5rem;
-            margin: 0.5rem;
+        .hero {
             width: 100%;
-            max-width: 600px;
+            max-width: 860px;
+            text-align: center;
+            margin-bottom: 1.5rem;
         }
-        .card h2 { color: #00ff41; margin-bottom: 1rem; font-size: 1.2rem; }
-        .info-row { display: flex; justify-content: space-between; padding: 0.3rem 0; border-bottom: 1px solid #222; }
-        .label { color: #888; }
-        .value { color: #fff; }
-        #uptime, #load { color: #00ff41; }
-        .status-ok { color: #00ff41; }
-        .status-off { color: #ff4141; }
-        a { color: #4488ff; }
-        .footer { margin-top: 2rem; color: #555; font-size: 0.8rem; }
+        h1 {
+            font-size: clamp(2.5rem, 8vw, 4.5rem);
+            letter-spacing: 0.08em;
+            margin-bottom: 0.35rem;
+        }
+        .subtitle {
+            color: #6b5642;
+            font-size: 1rem;
+            margin-bottom: 1.25rem;
+        }
+        .pillbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.75rem;
+            justify-content: center;
+        }
+        .pill {
+            border: 1px solid rgba(47, 36, 25, 0.15);
+            background: rgba(255, 255, 255, 0.65);
+            border-radius: 999px;
+            padding: 0.5rem 0.9rem;
+            font-size: 0.92rem;
+        }
+        .grid {
+            width: 100%;
+            max-width: 860px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 1rem;
+        }
+        .card {
+            background: rgba(255, 252, 247, 0.88);
+            border: 1px solid rgba(47, 36, 25, 0.12);
+            border-radius: 18px;
+            padding: 1.25rem;
+            box-shadow: 0 12px 30px rgba(70, 52, 31, 0.08);
+            backdrop-filter: blur(6px);
+        }
+        .card h2 {
+            margin-bottom: 0.9rem;
+            font-size: 1.05rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: #7a5a32;
+        }
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 1rem;
+            padding: 0.45rem 0;
+            border-bottom: 1px solid rgba(47, 36, 25, 0.08);
+        }
+        .info-row:last-child { border-bottom: none; }
+        .label { color: #7a6857; }
+        .value { color: #20170f; text-align: right; }
+        .status-ok { color: #2f6b3d; font-weight: 700; }
+        code {
+            font-family: "Courier New", monospace;
+            background: rgba(47, 36, 25, 0.06);
+            padding: 0.12rem 0.35rem;
+            border-radius: 6px;
+        }
+        .footer {
+            margin-top: 1.5rem;
+            color: #7a6857;
+            font-size: 0.85rem;
+            text-align: center;
+        }
     </style>
 </head>
 <body>
-    <h1>FROG-HACK</h1>
-    <p class="subtitle">AirTies AIR 7310T &bull; BCM7231 &bull; Custom Firmware</p>
+    <section class="hero">
+        <h1>FROG-HACK</h1>
+        <p class="subtitle">AirTies AIR 7310T &bull; BCM7231 &bull; Custom Linux bring-up</p>
+        <div class="pillbar">
+            <div class="pill">Ethernet 10/100 operational</div>
+            <div class="pill">SSH enabled</div>
+            <div class="pill">BusyBox + Dropbear</div>
+        </div>
+    </section>
 
-    <div class="card">
-        <h2>&gt; System Info</h2>
-        <div class="info-row"><span class="label">Hostname</span><span class="value" id="hostname">frog-hack</span></div>
-        <div class="info-row"><span class="label">Platform</span><span class="value">BCM7231B2 / BMIPS4380 @ 594 MHz</span></div>
-        <div class="info-row"><span class="label">Kernel</span><span class="value">Linux 3.3.8-2.3-betty</span></div>
-        <div class="info-row"><span class="label">Architecture</span><span class="value">mipsel (MIPS32 LE)</span></div>
-    </div>
+    <section class="grid">
+        <div class="card">
+            <h2>System</h2>
+            <div class="info-row"><span class="label">Hostname</span><span class="value">frog-hack</span></div>
+            <div class="info-row"><span class="label">SoC</span><span class="value">BCM7231B2 / BMIPS4380</span></div>
+            <div class="info-row"><span class="label">Kernel</span><span class="value">Linux 6.18.x custom</span></div>
+            <div class="info-row"><span class="label">Architecture</span><span class="value">mipsel (MIPS32 R1)</span></div>
+        </div>
 
-    <div class="card">
-        <h2>&gt; Services</h2>
-        <div class="info-row"><span class="label">SSH (22)</span><span class="value status-ok">ACTIVE</span></div>
-        <div class="info-row"><span class="label">Telnet (23)</span><span class="value status-ok">ACTIVE</span></div>
-        <div class="info-row"><span class="label">HTTP (80)</span><span class="value status-ok">ACTIVE</span></div>
-    </div>
+        <div class="card">
+            <h2>Services</h2>
+            <div class="info-row"><span class="label">SSH</span><span class="value status-ok">port 22 active</span></div>
+            <div class="info-row"><span class="label">HTTP</span><span class="value status-ok">port 80 active</span></div>
+            <div class="info-row"><span class="label">Telnet</span><span class="value">disabled</span></div>
+            <div class="info-row"><span class="label">Default IP</span><span class="value">192.168.2.1</span></div>
+        </div>
 
-    <div class="card">
-        <h2>&gt; Quick Access</h2>
-        <p style="color: #ccc; line-height: 1.8;">
-            SSH: <code>ssh root@<script>document.write(location.hostname)</script></code><br>
-            Web: <code>http://<script>document.write(location.hostname)</script>/</code><br>
-            Place your apps in: <code>/usr/share/www/</code><br>
-            USB mount point: <code>/mnt/usb/</code>
-        </p>
-    </div>
+        <div class="card">
+            <h2>Quick Access</h2>
+            <div class="info-row"><span class="label">SSH</span><span class="value"><code>ssh root@192.168.2.1</code></span></div>
+            <div class="info-row"><span class="label">Web</span><span class="value"><code>http://192.168.2.1/</code></span></div>
+            <div class="info-row"><span class="label">Web root</span><span class="value"><code>/usr/share/www</code></span></div>
+            <div class="info-row"><span class="label">USB mount</span><span class="value"><code>/mnt/usb</code></span></div>
+        </div>
+    </section>
 
-    <p class="footer">FROG-HACK &bull; github.com/frog-hack &bull; AirTies 7310T reverse engineering project</p>
+    <p class="footer">FROG-HACK &bull; AirTies AIR 7310T reverse engineering project</p>
 </body>
 </html>
 WEBPAGE
