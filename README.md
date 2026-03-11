@@ -61,6 +61,12 @@ Mac:     192.168.2.2
 Netmask: 255.255.255.0
 ```
 
+You need to bring up your interface (direct connect using Ethernet for easy testing for now), like on macOS :
+```sh
+networksetup -listallnetworkservices
+networksetup -setmanual "Ethernet" 192.168.2.2 255.255.255.0
+```
+
 ## Build & Flash Procedure
 
 ### Step 1: Build everything
