@@ -24,6 +24,54 @@ struct DevicesListResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct ConnectionResponse {
+    success: bool,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct StatsResponse {
+    success: bool,
+    total: usize,
+    connected: usize,
+    disconnected: usize,
+    devices: Vec<DeviceConnectionStatsEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct DeviceConnectionStatsEntry {
+    id: String,
+    name: String,
+    #[serde(rename = "type")]
+    device_type: String,
+    #[serde(rename = "isConnected")]
+    is_connected: bool,
+    connecting: bool,
+    #[serde(rename = "reconnectAttempts")]
+    reconnect_attempts: i32,
+}
+
+#[derive(Debug, Serialize)]
+struct DpsScanResponse {
+    success: bool,
+    scan_range: String,
+    scanned_count: usize,
+    found_count: usize,
+    available_dps: std::collections::BTreeMap<String, DpsValueSummary>,
+    errors_count: usize,
+    errors: Option<std::collections::BTreeMap<String, String>>,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DpsValueSummary {
+    value: Value,
+    #[serde(rename = "type")]
+    value_type: String,
+    length: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
 struct DeviceStatusResponse {
     success: bool,
     device: tuya::TuyaDeviceRef,
@@ -169,10 +217,24 @@ struct FountainPowerRequest {
     enabled: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct ScanDpsQuery {
+    start: Option<String>,
+    end: Option<String>,
+    timeout: Option<String>,
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_devices))
+        .route("/stats", get(stats))
+        .route("/reconnect", post(reconnect))
+        .route("/connect", post(connect_all))
+        .route("/disconnect", post(disconnect_all))
+        .route("/{device_id}/connect", get(connect_device))
+        .route("/{device_id}/disconnect", get(disconnect_device))
         .route("/{device_id}/status", get(status))
+        .route("/{device_id}/scan-dps", get(scan_dps))
         .route("/{device_id}/feeder/feed", post(feeder_feed))
         .route("/{device_id}/feeder/status", get(feeder_status))
         .route("/{device_id}/feeder/meal-plan", get(feeder_meal_plan).post(update_feeder_meal_plan))
@@ -215,6 +277,170 @@ async fn status(
         parsed_status,
         raw_status,
         message: "Device status retrieved successfully",
+    }))
+}
+
+async fn stats(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<Json<StatsResponse>, AppError> {
+    let _ = user.0;
+    let stats = state.tuya.connection_stats().await;
+
+    Ok(Json(StatsResponse {
+        success: true,
+        total: stats.total,
+        connected: stats.connected,
+        disconnected: stats.disconnected,
+        devices: stats
+            .devices
+            .into_iter()
+            .map(|device| DeviceConnectionStatsEntry {
+                id: device.id,
+                name: device.name,
+                device_type: device.device_type,
+                is_connected: device.connected,
+                connecting: device.connecting,
+                reconnect_attempts: device.reconnect_attempts,
+            })
+            .collect(),
+    }))
+}
+
+async fn reconnect(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<Json<ConnectionResponse>, AppError> {
+    let _ = user.0;
+    state.tuya.reconnect_disconnected().await;
+    Ok(Json(ConnectionResponse {
+        success: true,
+        message: "Reconnection initiated for disconnected devices".to_string(),
+    }))
+}
+
+async fn connect_all(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<Json<ConnectionResponse>, AppError> {
+    let _ = user.0;
+    let device_ids = state.tuya.list_devices().await.into_iter().map(|device| device.id).collect::<Vec<_>>();
+    for device_id in device_ids {
+        let _ = state.tuya.connect_device(&device_id).await;
+    }
+    Ok(Json(ConnectionResponse {
+        success: true,
+        message: "All devices connection initiated".to_string(),
+    }))
+}
+
+async fn disconnect_all(
+    State(state): State<AppState>,
+    user: AuthenticatedUser,
+) -> Result<Json<ConnectionResponse>, AppError> {
+    let _ = user.0;
+    state.tuya.disconnect_all_devices().await;
+    Ok(Json(ConnectionResponse {
+        success: true,
+        message: "All devices disconnected".to_string(),
+    }))
+}
+
+async fn connect_device(
+    State(state): State<AppState>,
+    Path(device_id): Path<String>,
+    user: AuthenticatedUser,
+) -> Result<Json<ConnectionResponse>, AppError> {
+    let _ = user.0;
+    let device = state.tuya.get_device_ref(&device_id)?;
+    let _ = state.tuya.connect_device(&device_id).await?;
+    Ok(Json(ConnectionResponse {
+        success: true,
+        message: format!("Device {} connection initiated", device.id),
+    }))
+}
+
+async fn disconnect_device(
+    State(state): State<AppState>,
+    Path(device_id): Path<String>,
+    user: AuthenticatedUser,
+) -> Result<Json<ConnectionResponse>, AppError> {
+    let _ = user.0;
+    let device = state.tuya.get_device_ref(&device_id)?;
+    state.tuya.disconnect_device(&device_id).await?;
+    Ok(Json(ConnectionResponse {
+        success: true,
+        message: format!("Device {} disconnected", device.id),
+    }))
+}
+
+async fn scan_dps(
+    State(state): State<AppState>,
+    Path(device_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<ScanDpsQuery>,
+    user: AuthenticatedUser,
+) -> Result<Json<DpsScanResponse>, AppError> {
+    let _ = user.0;
+    let _device = state.tuya.get_device_ref(&device_id)?;
+
+    let start = query
+        .start
+        .as_deref()
+        .unwrap_or("1")
+        .parse::<u32>()
+        .map_err(|_| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid start DPS"))?;
+    let end = query
+        .end
+        .as_deref()
+        .unwrap_or("255")
+        .parse::<u32>()
+        .map_err(|_| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid end DPS"))?;
+    let _timeout = query
+        .timeout
+        .as_deref()
+        .unwrap_or("3000")
+        .parse::<u32>()
+        .map_err(|_| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid timeout"))?;
+
+    if start == 0 || end < start {
+        return Err(AppError::http(
+            axum::http::StatusCode::BAD_REQUEST,
+            "Invalid DPS scan range",
+        ));
+    }
+
+    let (_, raw_status, _) = state.tuya.get_status(&device_id).await?;
+    let mut available_dps = std::collections::BTreeMap::new();
+
+    for dps in start..=end {
+        let key = dps.to_string();
+        if let Some(value) = raw_status.get(&key) {
+            available_dps.insert(
+                key,
+                DpsValueSummary {
+                    value: value.clone(),
+                    value_type: dps_value_type(value),
+                    length: value.as_str().map(str::len),
+                },
+            );
+        }
+    }
+
+    let scanned_count = usize::try_from(end - start + 1)
+        .map_err(|_| AppError::http(axum::http::StatusCode::BAD_REQUEST, "Invalid DPS scan range"))?;
+    let found_count = available_dps.len();
+
+    Ok(Json(DpsScanResponse {
+        success: true,
+        scan_range: format!("{start}-{end}"),
+        scanned_count,
+        found_count,
+        available_dps,
+        errors_count: 0,
+        errors: None,
+        message: format!(
+            "DPS scan completed: {found_count} active DPS found out of {scanned_count} scanned"
+        ),
     }))
 }
 
@@ -796,6 +1022,18 @@ fn describe_fountain_uv_updates(settings: &FountainUvAppliedSettings) -> String 
         parts.push(format!("UV runtime set to {runtime} hours"));
     }
     parts.join(", ")
+}
+
+fn dps_value_type(value: &Value) -> String {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+    .to_string()
 }
 
 #[cfg(test)]

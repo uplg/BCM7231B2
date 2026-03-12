@@ -45,6 +45,19 @@ pub fn build_app_from_config(config: Arc<Config>) -> Result<Router, AppError> {
         tuya,
     };
 
+    let startup_tuya = state.tuya.clone();
+    tokio::spawn(async move {
+        let device_ids = startup_tuya
+            .list_devices()
+            .await
+            .into_iter()
+            .map(|device| device.id)
+            .collect::<Vec<_>>();
+        for device_id in device_ids {
+            let _ = startup_tuya.connect_device(&device_id).await;
+        }
+    });
+
     Ok(build_app(state))
 }
 

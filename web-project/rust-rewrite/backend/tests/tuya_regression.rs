@@ -8,6 +8,7 @@ use std::{
 use axum::{
     body::{Body, to_bytes},
     http::{Method, Request, StatusCode},
+    Router,
 };
 use cat_monitor_rust_backend::{auth::Claims, build_app_from_config, config::Config};
 use jsonwebtoken::{EncodingKey, Header, encode};
@@ -42,6 +43,62 @@ async fn devices_list_matches_runtime_contract() {
     assert!(devices.iter().any(|device| device.get("type") == Some(&Value::String("feeder".to_string()))));
     assert!(devices.iter().any(|device| device.get("type") == Some(&Value::String("litter-box".to_string()))));
     assert!(devices.iter().any(|device| device.get("type") == Some(&Value::String("fountain".to_string()))));
+}
+
+#[tokio::test]
+async fn stats_reports_runtime_connection_fields() {
+    let _guard = tuya_test_lock().lock().await;
+    let rust = request_rust("/api/devices/stats").await;
+
+    assert_eq!(rust.0, StatusCode::OK);
+    assert_eq!(rust.1.pointer("/success"), Some(&Value::Bool(true)));
+    assert_eq!(rust.1.pointer("/total"), Some(&json!(3)));
+    assert!(rust.1.pointer("/connected").is_some());
+    assert!(rust.1.pointer("/disconnected").is_some());
+    assert!(rust.1.pointer("/devices/0/connecting").is_some());
+    assert!(rust.1.pointer("/devices/0/reconnectAttempts").is_some());
+}
+
+#[tokio::test]
+async fn disconnect_then_connect_device_updates_runtime_stats() {
+    let _guard = tuya_test_lock().lock().await;
+
+    let app = build_test_app();
+
+    let disconnect = request_with_app(&app, Method::GET, "/api/devices/bfe88591a492929ab380tm/disconnect", None).await;
+    assert_eq!(disconnect.0, StatusCode::OK);
+
+    let stats = request_with_app(&app, Method::GET, "/api/devices/stats", None).await;
+    assert_eq!(stats.0, StatusCode::OK);
+    let litter_entry = find_stats_device(&stats.1, "bfe88591a492929ab380tm");
+    assert_eq!(litter_entry.pointer("/isConnected"), Some(&Value::Bool(false)));
+
+    let connect = request_with_app(&app, Method::GET, "/api/devices/bfe88591a492929ab380tm/connect", None).await;
+    assert_eq!(connect.0, StatusCode::OK);
+
+    let stats = request_with_app(&app, Method::GET, "/api/devices/stats", None).await;
+    assert_eq!(stats.0, StatusCode::OK);
+    let litter_entry = find_stats_device(&stats.1, "bfe88591a492929ab380tm");
+    let reconnect_attempts = litter_entry
+        .pointer("/reconnectAttempts")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    let is_connected = litter_entry.pointer("/isConnected").and_then(Value::as_bool);
+    assert!(
+        is_connected == Some(true) || reconnect_attempts > 0,
+        "connect should either succeed immediately or register a retry attempt"
+    );
+}
+
+#[tokio::test]
+async fn scan_dps_reports_visible_range_summary() {
+    let _guard = tuya_test_lock().lock().await;
+    let rust = request_rust("/api/devices/bfe88591a492929ab380tm/scan-dps?start=101&end=119&timeout=3000").await;
+
+    assert_eq!(rust.0, StatusCode::OK);
+    assert_eq!(rust.1.pointer("/scan_range"), Some(&Value::String("101-119".to_string())));
+    assert!(rust.1.pointer("/available_dps/101").is_some());
+    assert!(rust.1.pointer("/found_count").and_then(Value::as_u64).unwrap_or_default() > 0);
 }
 
 #[tokio::test]
@@ -305,14 +362,27 @@ async fn request_rust(path: &str) -> (StatusCode, Value) {
 }
 
 async fn request_rust_with_body(method: Method, path: &str, body: Option<Value>) -> (StatusCode, Value) {
-    let (status, body) = request_rust_raw(method, path, body).await;
+    let app = build_test_app();
+    request_with_app(&app, method, path, body).await
+}
+
+async fn request_with_app(app: &Router, method: Method, path: &str, body: Option<Value>) -> (StatusCode, Value) {
+    let (status, body) = request_with_app_raw(app, method, path, body).await;
     let json = serde_json::from_slice::<Value>(&body).expect("response should be valid json");
     (status, json)
 }
 
 async fn request_rust_raw(method: Method, path: &str, body: Option<Value>) -> (StatusCode, bytes::Bytes) {
-    let config = test_config();
-    let app = build_app_from_config(Arc::new(config)).expect("failed to build test app");
+    let app = build_test_app();
+    request_with_app_raw(&app, method, path, body).await
+}
+
+async fn request_with_app_raw(
+    app: &Router,
+    method: Method,
+    path: &str,
+    body: Option<Value>,
+) -> (StatusCode, bytes::Bytes) {
     let token = rust_test_token();
 
     let mut builder = Request::builder()
@@ -330,12 +400,17 @@ async fn request_rust_raw(method: Method, path: &str, body: Option<Value>) -> (S
         )
         .expect("request should build");
 
-    let response = app.oneshot(request).await.expect("request should succeed");
+    let response = app.clone().oneshot(request).await.expect("request should succeed");
     let status = response.status();
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("body should be readable");
     (status, body)
+}
+
+fn build_test_app() -> Router {
+    let config = Arc::new(test_config());
+    build_app_from_config(config).expect("failed to build test app")
 }
 
 async fn request_legacy(path: &str) -> (StatusCode, Value) {
@@ -470,6 +545,21 @@ fn normalize_litter_box_status(mut value: Value) -> Value {
         }
     }
     value
+}
+
+fn find_stats_device<'a>(value: &'a Value, device_id: &str) -> &'a Value {
+    value
+        .get("devices")
+        .and_then(Value::as_array)
+        .and_then(|devices| {
+            devices.iter().find(|device| {
+                device
+                    .get("id")
+                    .and_then(Value::as_str)
+                    == Some(device_id)
+            })
+        })
+        .expect("device entry should be present")
 }
 
 fn normalize_numbers(value: Value) -> Value {

@@ -7,16 +7,20 @@ use std::{
     time::Duration,
 };
 
-use rust_async_tuyapi::{DpId, Payload, PayloadStruct, tuyadevice::TuyaDevice};
+use rust_async_tuyapi::{DpId, Payload, PayloadStruct, mesparse::Message, tuyadevice::TuyaDevice};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, mpsc, oneshot};
 
 use crate::error::AppError;
 
 const STATUS_TIMEOUT_MS: u64 = 12_000;
 const MESSAGE_DRAIN_TIMEOUT_MS: u64 = 1_500;
 const COMMAND_SETTLE_TIMEOUT_MS: u64 = 400;
+const HEARTBEAT_INTERVAL_MS: u64 = 30_000;
+const COMMAND_REPLY_TIMEOUT_MS: u64 = 20_000;
+const RECONNECT_BASE_DELAY_MS: u64 = 1_000;
+const RECONNECT_MAX_DELAY_MS: u64 = 60_000;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TuyaDeviceConfig {
@@ -67,12 +71,36 @@ pub struct TuyaManager {
     devices: Arc<HashMap<String, ManagedTuyaDevice>>,
     cache: Arc<RwLock<DeviceCache>>,
     cache_path: Arc<PathBuf>,
+    runtime: Arc<RwLock<HashMap<String, RuntimeDeviceState>>>,
 }
 
 #[derive(Debug, Clone)]
 struct ManagedTuyaDevice {
     config: TuyaDeviceConfig,
     device_type: TuyaDeviceType,
+}
+
+#[derive(Debug)]
+struct RuntimeDeviceState {
+    connected: bool,
+    connecting: bool,
+    reconnect_attempts: i32,
+    last_data: Map<String, Value>,
+    parsed_data: Value,
+    command_tx: Option<mpsc::Sender<WorkerCommand>>,
+}
+
+enum WorkerCommand {
+    FetchStatus {
+        reply: oneshot::Sender<Result<Map<String, Value>, String>>,
+    },
+    SetValues {
+        updates: Vec<(String, Value)>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Disconnect {
+        reply: oneshot::Sender<()>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,10 +137,33 @@ impl TuyaManager {
             })
             .collect::<HashMap<_, _>>();
 
+        let runtime = devices
+            .values()
+            .map(|device| {
+                let cached = cache
+                    .0
+                    .get(&device.config.id)
+                    .map(|values| values.iter().map(|(key, value)| (key.clone(), value.clone())).collect())
+                    .unwrap_or_default();
+                (
+                    device.config.id.clone(),
+                    RuntimeDeviceState {
+                        connected: false,
+                        connecting: false,
+                        reconnect_attempts: 0,
+                        parsed_data: parse_device_data(device.device_type, &cached),
+                        last_data: cached,
+                        command_tx: None,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+
         Ok(Self {
             devices: Arc::new(devices),
             cache: Arc::new(RwLock::new(cache)),
             cache_path: Arc::new(cache_path.to_path_buf()),
+            runtime: Arc::new(RwLock::new(runtime)),
         })
     }
 
@@ -120,16 +171,19 @@ impl TuyaManager {
         let mut entries = Vec::with_capacity(self.devices.len());
 
         for device in self.devices.values() {
-            let status = fetch_live_device_dps(&device.config).await;
-            let (merged, connected) = match status {
-                Ok(mut live_dps) => {
-                    self.store_cacheable_dps(&device.config.id, device.device_type, &live_dps)
-                        .await;
-                    self.merge_cached_dps(&mut live_dps, device.device_type, &device.config.id)
-                        .await;
-                    (live_dps, true)
-                }
-                Err(_) => (self.cached_dps(&device.config.id).await, false),
+            let runtime_snapshot = self.runtime_snapshot(&device.config.id).await;
+            let (merged, connected, parsed_data, connecting, reconnect_attempts) = if let Some(snapshot) = runtime_snapshot {
+                (
+                    snapshot.last_data,
+                    snapshot.connected,
+                    snapshot.parsed_data,
+                    snapshot.connecting,
+                    snapshot.reconnect_attempts,
+                )
+            } else {
+                let cached = self.cached_dps(&device.config.id).await;
+                let parsed = parse_device_data(device.device_type, &cached);
+                (cached, false, parsed, false, 0)
             };
 
             entries.push(TuyaDeviceListEntry {
@@ -141,10 +195,10 @@ impl TuyaManager {
                 ip: device.config.ip.clone(),
                 version: device.config.version.clone(),
                 connected,
-                connecting: false,
-                reconnect_attempts: 0,
+                connecting,
+                reconnect_attempts,
                 last_data: TuyaStatusPayload { dps: merged.clone() },
-                parsed_data: parse_device_data(device.device_type, &merged),
+                parsed_data,
             });
         }
 
@@ -207,6 +261,18 @@ impl TuyaManager {
             .await
     }
 
+    pub fn get_device_ref(&self, device_id: &str) -> Result<TuyaDeviceRef, AppError> {
+        let device = self
+            .devices
+            .get(device_id)
+            .ok_or_else(|| AppError::http(axum::http::StatusCode::NOT_FOUND, "Device not found"))?;
+
+        Ok(TuyaDeviceRef {
+            id: device.config.id.clone(),
+            name: device.config.name.clone(),
+        })
+    }
+
     pub async fn send_typed_commands(
         &self,
         device_id: &str,
@@ -215,7 +281,7 @@ impl TuyaManager {
     ) -> Result<TuyaDeviceRef, AppError> {
         let device = self.validate_typed_device(device_id, expected)?;
 
-        send_device_commands(&device.config, &updates).await?;
+        self.send_device_commands(&device.config, device.device_type, &updates).await?;
         self.store_command_cache_updates(&device.config.id, device.device_type, &updates)
             .await;
 
@@ -264,12 +330,114 @@ impl TuyaManager {
         ))
     }
 
+    pub async fn connect_device(&self, device_id: &str) -> Result<bool, AppError> {
+        let device = self
+            .devices
+            .get(device_id)
+            .ok_or_else(|| AppError::http(axum::http::StatusCode::NOT_FOUND, "Device not found"))?;
+
+        if self.runtime_command_sender(&device.config.id).await.is_some() {
+            return Ok(true);
+        }
+
+        let (tx, rx) = mpsc::channel(16);
+        self.note_runtime_connect_attempt(&device.config.id, tx.clone()).await;
+
+        let manager = self.clone();
+        let config = device.config.clone();
+        let device_type = device.device_type;
+        let worker_tx = tx.clone();
+        tokio::spawn(async move {
+            manager.run_device_worker(config, device_type, worker_tx, rx).await;
+        });
+
+        tokio::time::timeout(Duration::from_millis(STATUS_TIMEOUT_MS), async {
+            loop {
+                if let Some(snapshot) = self.runtime_snapshot(&device.config.id).await {
+                    if snapshot.connected {
+                        return true;
+                    }
+                    if !snapshot.connecting && snapshot.reconnect_attempts > 0 {
+                        return false;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .unwrap_or(false)
+        .then_some(true)
+        .ok_or_else(|| AppError::service_unavailable(format!("Failed to connect to {}", device.config.name)))?;
+
+        Ok(true)
+    }
+
+    pub async fn disconnect_device(&self, device_id: &str) -> Result<(), AppError> {
+        self.get_device_ref(device_id)?;
+        if let Some(tx) = self.runtime_command_sender(device_id).await {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            let _ = tx.send(WorkerCommand::Disconnect { reply: reply_tx }).await;
+            let _ = tokio::time::timeout(Duration::from_millis(STATUS_TIMEOUT_MS), reply_rx).await;
+        }
+        self.mark_runtime_disconnected(device_id, true).await;
+        Ok(())
+    }
+
+    pub async fn reconnect_disconnected(&self) {
+        let device_ids = {
+            let runtime = self.runtime.read().await;
+            runtime
+                .iter()
+                .filter(|(_, state)| !state.connected)
+                .map(|(device_id, _)| device_id.clone())
+                .collect::<Vec<_>>()
+        };
+
+        for device_id in device_ids {
+            let _ = self.connect_device(&device_id).await;
+        }
+    }
+
+    pub async fn disconnect_all_devices(&self) {
+        let device_ids = self.devices.keys().cloned().collect::<Vec<_>>();
+        for device_id in device_ids {
+            self.mark_runtime_disconnected(&device_id, true).await;
+        }
+    }
+
+    pub async fn connection_stats(&self) -> TuyaConnectionStats {
+        let runtime = self.runtime.read().await;
+        let devices = self
+            .devices
+            .values()
+            .map(|device| {
+                let state = runtime.get(&device.config.id);
+                TuyaConnectionStatsEntry {
+                    id: device.config.id.clone(),
+                    name: device.config.name.clone(),
+                    device_type: device.device_type.as_str().to_string(),
+                    connected: state.map(|state| state.connected).unwrap_or(false),
+                    connecting: state.map(|state| state.connecting).unwrap_or(false),
+                    reconnect_attempts: state.map(|state| state.reconnect_attempts).unwrap_or_default(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let connected = devices.iter().filter(|device| device.connected).count();
+
+        TuyaConnectionStats {
+            total: devices.len(),
+            connected,
+            disconnected: devices.len().saturating_sub(connected),
+            devices,
+        }
+    }
+
     async fn fetch_device_dps(
         &self,
         config: &TuyaDeviceConfig,
         device_type: TuyaDeviceType,
     ) -> Result<Map<String, Value>, AppError> {
-        let mut merged = fetch_live_device_dps(config).await?;
+        let mut merged = self.fetch_device_dps_via_worker(config, device_type).await?;
         self.store_cacheable_dps(&config.id, device_type, &merged).await;
         self.merge_cached_dps(&mut merged, device_type, &config.id).await;
         Ok(merged)
@@ -346,59 +514,300 @@ impl TuyaManager {
 
         let _ = save_device_cache(&self.cache_path, &snapshot);
     }
-}
 
-async fn send_device_commands(
-    config: &TuyaDeviceConfig,
-    updates: &[(String, Value)],
-) -> Result<(), AppError> {
-    let ip = IpAddr::from_str(&config.ip)
-        .map_err(|_| AppError::service_unavailable(format!("Invalid device IP for {}", config.name)))?;
+    async fn send_device_commands(
+        &self,
+        config: &TuyaDeviceConfig,
+        device_type: TuyaDeviceType,
+        updates: &[(String, Value)],
+    ) -> Result<(), AppError> {
+        let tx = self
+            .runtime_command_sender(&config.id)
+            .await
+            .ok_or_else(|| AppError::service_unavailable(format!("{} is not connected", config.name)))?;
 
-    let mut device = TuyaDevice::new(&config.version, &config.id, Some(&config.key), ip)
-        .map_err(|error| AppError::service_unavailable(error.to_string()))?;
-
-    let mut rx = tokio::time::timeout(Duration::from_millis(STATUS_TIMEOUT_MS), device.connect())
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send(WorkerCommand::SetValues {
+            updates: updates.to_vec(),
+            reply: reply_tx,
+        })
         .await
-        .map_err(|_| AppError::service_unavailable(format!("Connection timeout for {}", config.name)))?
-        .map_err(|error| AppError::service_unavailable(error.to_string()))?;
+        .map_err(|_| AppError::service_unavailable(format!("{} worker is unavailable", config.name)))?;
 
-    for (dps, value) in updates {
-        let mut payload = Map::new();
-        payload.insert(dps.clone(), value.clone());
+        tokio::time::timeout(Duration::from_millis(COMMAND_REPLY_TIMEOUT_MS), reply_rx)
+            .await
+            .map_err(|_| AppError::service_unavailable(format!("Command timeout for {}", config.name)))?
+            .map_err(|_| AppError::service_unavailable(format!("{} worker dropped command reply", config.name)))?
+            .map_err(AppError::service_unavailable)?;
 
-        tokio::time::timeout(
-            Duration::from_millis(STATUS_TIMEOUT_MS),
-            device.set_values(Value::Object(payload)),
-        )
-        .await
-        .map_err(|_| AppError::service_unavailable(format!("Command timeout for {}", config.name)))?
-        .map_err(|error| AppError::service_unavailable(error.to_string()))?;
-
-        let _ = tokio::time::timeout(Duration::from_millis(COMMAND_SETTLE_TIMEOUT_MS), rx.recv()).await;
+        let mut merged = self.cached_dps(&config.id).await;
+        for (key, value) in updates {
+            merged.insert(key.clone(), value.clone());
+        }
+        self.update_runtime_snapshot(&config.id, device_type, true, merged).await;
+        Ok(())
     }
 
-    let _ = device.disconnect().await;
-    Ok(())
+    async fn runtime_command_sender(&self, device_id: &str) -> Option<mpsc::Sender<WorkerCommand>> {
+        self.runtime
+            .read()
+            .await
+            .get(device_id)
+            .and_then(|state| state.command_tx.clone())
+    }
+
+    async fn runtime_snapshot(&self, device_id: &str) -> Option<RuntimeSnapshot> {
+        self.runtime.read().await.get(device_id).map(|state| RuntimeSnapshot {
+            connected: state.connected,
+            connecting: state.connecting,
+            reconnect_attempts: state.reconnect_attempts,
+            last_data: state.last_data.clone(),
+            parsed_data: state.parsed_data.clone(),
+        })
+    }
+
+    async fn note_runtime_connect_attempt(&self, device_id: &str, command_tx: mpsc::Sender<WorkerCommand>) {
+        let mut runtime = self.runtime.write().await;
+        if let Some(state) = runtime.get_mut(device_id) {
+            state.connecting = true;
+            state.command_tx = Some(command_tx);
+            if !state.connected {
+                state.reconnect_attempts += 1;
+            }
+        }
+    }
+
+    async fn note_runtime_retry_attempt(&self, device_id: &str, command_tx: mpsc::Sender<WorkerCommand>) {
+        let mut runtime = self.runtime.write().await;
+        if let Some(state) = runtime.get_mut(device_id) {
+            state.connecting = true;
+            state.command_tx = Some(command_tx);
+            state.reconnect_attempts += 1;
+        }
+    }
+
+    async fn mark_runtime_connected(&self, device_id: &str) {
+        let mut runtime = self.runtime.write().await;
+        if let Some(state) = runtime.get_mut(device_id) {
+            state.connected = true;
+            state.connecting = false;
+            state.reconnect_attempts = 0;
+        }
+    }
+
+    async fn mark_runtime_failed(&self, device_id: &str, clear_sender: bool) {
+        let mut runtime = self.runtime.write().await;
+        if let Some(state) = runtime.get_mut(device_id) {
+            state.connected = false;
+            state.connecting = false;
+            if clear_sender {
+                state.command_tx = None;
+            }
+        }
+    }
+
+    async fn mark_runtime_disconnected(&self, device_id: &str, clear_sender: bool) {
+        let mut runtime = self.runtime.write().await;
+        if let Some(state) = runtime.get_mut(device_id) {
+            state.connected = false;
+            state.connecting = false;
+            if clear_sender {
+                state.command_tx = None;
+            }
+        }
+    }
+
+    async fn update_runtime_snapshot(
+        &self,
+        device_id: &str,
+        device_type: TuyaDeviceType,
+        connected: bool,
+        dps: Map<String, Value>,
+    ) {
+        let mut runtime = self.runtime.write().await;
+        if let Some(state) = runtime.get_mut(device_id) {
+            state.connected = connected;
+            state.connecting = false;
+            state.last_data = dps.clone();
+            state.parsed_data = parse_device_data(device_type, &dps);
+        }
+    }
+
+    async fn fetch_device_dps_via_worker(
+        &self,
+        config: &TuyaDeviceConfig,
+        device_type: TuyaDeviceType,
+    ) -> Result<Map<String, Value>, AppError> {
+        if self.runtime_command_sender(&config.id).await.is_none() {
+            self.connect_device(&config.id).await?;
+        }
+
+        let tx = self
+            .runtime_command_sender(&config.id)
+            .await
+            .ok_or_else(|| AppError::service_unavailable(format!("{} is not connected", config.name)))?;
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.send(WorkerCommand::FetchStatus { reply: reply_tx })
+            .await
+            .map_err(|_| AppError::service_unavailable(format!("{} worker is unavailable", config.name)))?;
+
+        let dps = tokio::time::timeout(Duration::from_millis(COMMAND_REPLY_TIMEOUT_MS), reply_rx)
+            .await
+            .map_err(|_| AppError::service_unavailable(format!("Status request timeout for {}", config.name)))?
+            .map_err(|_| AppError::service_unavailable(format!("{} worker dropped status reply", config.name)))?
+            .map_err(AppError::service_unavailable)?;
+
+        self.update_runtime_snapshot(&config.id, device_type, true, dps.clone()).await;
+        Ok(dps)
+    }
+
+    async fn run_device_worker(
+        self,
+        config: TuyaDeviceConfig,
+        device_type: TuyaDeviceType,
+        command_tx: mpsc::Sender<WorkerCommand>,
+        mut command_rx: mpsc::Receiver<WorkerCommand>,
+    ) {
+        loop {
+            let run_result = self
+                .run_device_worker_session(config.clone(), device_type, &mut command_rx)
+                .await;
+
+            match run_result {
+                WorkerLoopResult::Shutdown => {
+                    self.mark_runtime_disconnected(&config.id, true).await;
+                    break;
+                }
+                WorkerLoopResult::Retry => {
+                    let attempts = self.runtime_snapshot(&config.id).await.map(|s| s.reconnect_attempts).unwrap_or(1);
+                    let delay = reconnect_delay(attempts);
+                    tokio::time::sleep(delay).await;
+                    self.note_runtime_retry_attempt(&config.id, command_tx.clone()).await;
+                }
+            }
+        }
+    }
+
+    async fn run_device_worker_session(
+        &self,
+        config: TuyaDeviceConfig,
+        device_type: TuyaDeviceType,
+        command_rx: &mut mpsc::Receiver<WorkerCommand>,
+    ) -> WorkerLoopResult {
+        let ip = match IpAddr::from_str(&config.ip) {
+            Ok(ip) => ip,
+            Err(_) => {
+                self.mark_runtime_failed(&config.id, false).await;
+                return WorkerLoopResult::Retry;
+            }
+        };
+
+        let mut device = match TuyaDevice::new(&config.version, &config.id, Some(&config.key), ip) {
+            Ok(device) => device,
+            Err(_) => {
+                self.mark_runtime_failed(&config.id, false).await;
+                return WorkerLoopResult::Retry;
+            }
+        };
+
+        let mut rx = match tokio::time::timeout(Duration::from_millis(STATUS_TIMEOUT_MS), device.connect()).await {
+            Ok(Ok(rx)) => rx,
+            _ => {
+                self.mark_runtime_failed(&config.id, false).await;
+                return WorkerLoopResult::Retry;
+            }
+        };
+
+        self.mark_runtime_connected(&config.id).await;
+        if let Ok(dps) = worker_fetch_status(&mut device, &mut rx, &config).await {
+            self.store_cacheable_dps(&config.id, device_type, &dps).await;
+            self.update_runtime_snapshot(&config.id, device_type, true, dps).await;
+        }
+
+        let mut heartbeat = tokio::time::interval(Duration::from_millis(HEARTBEAT_INTERVAL_MS));
+
+        loop {
+            tokio::select! {
+                _ = heartbeat.tick() => {
+                    if device.heartbeat().await.is_err() {
+                        self.mark_runtime_failed(&config.id, false).await;
+                        let _ = device.disconnect().await;
+                        return WorkerLoopResult::Retry;
+                    }
+                }
+                maybe_messages = rx.recv() => {
+                    match maybe_messages {
+                        Some(Ok(messages)) => {
+                            let current = self.runtime_snapshot(&config.id).await.map(|snapshot| snapshot.last_data).unwrap_or_default();
+                            let merged = merge_messages_into_dps(current, messages);
+                            self.store_cacheable_dps(&config.id, device_type, &merged).await;
+                            self.update_runtime_snapshot(&config.id, device_type, true, merged).await;
+                        }
+                        Some(Err(_)) | None => {
+                            self.mark_runtime_failed(&config.id, false).await;
+                            let _ = device.disconnect().await;
+                            return WorkerLoopResult::Retry;
+                        }
+                    }
+                }
+                Some(command) = command_rx.recv() => {
+                    match command {
+                        WorkerCommand::FetchStatus { reply } => {
+                            let _ = reply.send(worker_fetch_status(&mut device, &mut rx, &config).await.map_err(|err| err.to_string()));
+                        }
+                        WorkerCommand::SetValues { updates, reply } => {
+                            let result = worker_send_commands(&mut device, &mut rx, &config, &updates).await;
+                            let _ = reply.send(result.map_err(|err| err.to_string()));
+                        }
+                        WorkerCommand::Disconnect { reply } => {
+                            let _ = device.disconnect().await;
+                            let _ = reply.send(());
+                            return WorkerLoopResult::Shutdown;
+                        }
+                    }
+                }
+                else => {
+                    let _ = device.disconnect().await;
+                    return WorkerLoopResult::Shutdown;
+                }
+            }
+        }
+    }
 }
 
-async fn fetch_live_device_dps(config: &TuyaDeviceConfig) -> Result<Map<String, Value>, AppError> {
+#[derive(Debug, Clone)]
+struct RuntimeSnapshot {
+    connected: bool,
+    connecting: bool,
+    reconnect_attempts: i32,
+    last_data: Map<String, Value>,
+    parsed_data: Value,
+}
+
+enum WorkerLoopResult {
+    Retry,
+    Shutdown,
+}
+
+fn reconnect_delay(attempts: i32) -> Duration {
+    let exponent = attempts.max(1).saturating_sub(1) as u32;
+    let delay_ms = RECONNECT_BASE_DELAY_MS
+        .saturating_mul(2_u64.saturating_pow(exponent))
+        .min(RECONNECT_MAX_DELAY_MS);
+    Duration::from_millis(delay_ms)
+}
+
+async fn worker_fetch_status(
+    device: &mut TuyaDevice,
+    rx: &mut tokio::sync::mpsc::Receiver<rust_async_tuyapi::Result<Vec<Message>>>,
+    config: &TuyaDeviceConfig,
+) -> Result<Map<String, Value>, AppError> {
     let current_time = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| AppError::service_unavailable(error.to_string()))?
         .as_secs()
         .to_string();
-
-    let ip = IpAddr::from_str(&config.ip)
-        .map_err(|_| AppError::service_unavailable(format!("Invalid device IP for {}", config.name)))?;
-
-    let mut device = TuyaDevice::new(&config.version, &config.id, Some(&config.key), ip)
-        .map_err(|error| AppError::service_unavailable(error.to_string()))?;
-
-    let mut rx = tokio::time::timeout(Duration::from_millis(STATUS_TIMEOUT_MS), device.connect())
-        .await
-        .map_err(|_| AppError::service_unavailable(format!("Connection timeout for {}", config.name)))?
-        .map_err(|error| AppError::service_unavailable(error.to_string()))?;
 
     let payload = Payload::Struct(PayloadStruct {
         gw_id: Some(config.id.clone()),
@@ -449,8 +858,59 @@ async fn fetch_live_device_dps(config: &TuyaDeviceConfig) -> Result<Map<String, 
         }
     }
 
-    let _ = device.disconnect().await;
     Ok(merged)
+}
+
+async fn worker_send_commands(
+    device: &mut TuyaDevice,
+    rx: &mut tokio::sync::mpsc::Receiver<rust_async_tuyapi::Result<Vec<Message>>>,
+    config: &TuyaDeviceConfig,
+    updates: &[(String, Value)],
+) -> Result<(), AppError> {
+    for (dps, value) in updates {
+        let mut payload = Map::new();
+        payload.insert(dps.clone(), value.clone());
+
+        tokio::time::timeout(
+            Duration::from_millis(STATUS_TIMEOUT_MS),
+            device.set_values(Value::Object(payload)),
+        )
+        .await
+        .map_err(|_| AppError::service_unavailable(format!("Command timeout for {}", config.name)))?
+        .map_err(|error| AppError::service_unavailable(error.to_string()))?;
+
+        let _ = tokio::time::timeout(Duration::from_millis(COMMAND_SETTLE_TIMEOUT_MS), rx.recv()).await;
+    }
+
+    Ok(())
+}
+
+fn merge_messages_into_dps(
+    mut current: Map<String, Value>,
+    messages: Vec<Message>,
+) -> Map<String, Value> {
+    for message in messages {
+        merge_payload_dps(&mut current, message.payload);
+    }
+    current
+}
+
+#[derive(Debug, Clone)]
+pub struct TuyaConnectionStats {
+    pub total: usize,
+    pub connected: usize,
+    pub disconnected: usize,
+    pub devices: Vec<TuyaConnectionStatsEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TuyaConnectionStatsEntry {
+    pub id: String,
+    pub name: String,
+    pub device_type: String,
+    pub connected: bool,
+    pub connecting: bool,
+    pub reconnect_attempts: i32,
 }
 
 fn cacheable_dps_keys(device_type: TuyaDeviceType) -> &'static [&'static str] {
