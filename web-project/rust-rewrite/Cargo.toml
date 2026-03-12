@@ -8,4 +8,4 @@ license = "MIT"
 version = "0.1.0"
 
 [patch.crates-io]
-rust-async-tuyapi = { path = "vendor/rust-async-tuyapi" }
+rust-async-tuyapi = { git = "https://github.com/uplg/rust-async-tuyapi.git", rev = "b4f3b0c31f47d251c7e13585a8ce1babda984332" }
