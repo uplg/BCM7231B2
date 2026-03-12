@@ -16,3 +16,5 @@ logs/
 
 # macOS
 .DS_Store
+
+web-project/cat-monitor/**/*

@@ -8,6 +8,8 @@ pub struct Config {
     pub source_root: PathBuf,
     pub users_path: PathBuf,
     pub meross_devices_path: PathBuf,
+    pub devices_path: PathBuf,
+    pub device_cache_path: PathBuf,
 }
 
 impl Config {
@@ -23,6 +25,14 @@ impl Config {
         let meross_devices_path = env::var("MEROSS_DEVICES_JSON_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| source_root.join("meross-devices.json"));
+
+        let devices_path = env::var("DEVICES_JSON_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| source_root.join("devices.json"));
+
+        let device_cache_path = env::var("DEVICE_CACHE_JSON_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| source_root.join("device-cache.json"));
 
         let port = env::var("PORT")
             .ok()
@@ -41,6 +51,8 @@ impl Config {
             source_root,
             users_path,
             meross_devices_path,
+            devices_path,
+            device_cache_path,
         }
     }
 }

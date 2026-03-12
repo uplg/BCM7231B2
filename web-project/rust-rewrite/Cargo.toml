@@ -6,3 +6,6 @@ resolver = "2"
 edition = "2021"
 license = "MIT"
 version = "0.1.0"
+
+[patch.crates-io]
+rust-async-tuyapi = { path = "vendor/rust-async-tuyapi" }

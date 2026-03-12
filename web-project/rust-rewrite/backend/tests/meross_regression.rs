@@ -158,6 +158,8 @@ fn test_config() -> Config {
         jwt_secret: env::var("JWT_SECRET").unwrap_or_else(|_| "super-secret-cat-key-change-me".to_string()),
         users_path: source_root.join("users.json"),
         meross_devices_path: source_root.join("meross-devices.json"),
+        devices_path: source_root.join("devices.json"),
+        device_cache_path: source_root.join("device-cache.json"),
         source_root,
     }
 }

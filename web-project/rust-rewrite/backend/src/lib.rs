@@ -4,6 +4,7 @@ pub mod error;
 pub mod meross;
 pub mod routes;
 pub mod tempo;
+pub mod tuya;
 
 use std::sync::Arc;
 
@@ -13,6 +14,7 @@ use error::AppError;
 use routes::auth::{load_users, SharedUsers};
 use meross::MerossManager;
 use tempo::TempoService;
+use tuya::TuyaManager;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 #[derive(Clone)]
@@ -21,6 +23,7 @@ pub struct AppState {
     pub(crate) users: SharedUsers,
     pub(crate) meross: MerossManager,
     pub(crate) tempo: TempoService,
+    pub(crate) tuya: TuyaManager,
 }
 
 pub fn app_from_env() -> Result<Router, AppError> {
@@ -32,12 +35,14 @@ pub fn build_app_from_config(config: Arc<Config>) -> Result<Router, AppError> {
     let users = Arc::new(load_users(&config));
     let meross = MerossManager::new(&config.meross_devices_path)?;
     let tempo = TempoService::new(config.source_root.clone())?;
+    let tuya = TuyaManager::new(&config.devices_path, &config.device_cache_path)?;
 
     let state = AppState {
         config,
         users,
         meross,
         tempo,
+        tuya,
     };
 
     Ok(build_app(state))
@@ -47,6 +52,7 @@ pub fn build_app(state: AppState) -> Router {
     let api_router = Router::<AppState>::new()
         .merge(routes::root::router())
         .nest("/auth", routes::auth::router())
+        .nest("/devices", routes::devices::router())
         .nest("/meross", routes::meross::router())
         .nest("/tempo", routes::tempo::router());
 
