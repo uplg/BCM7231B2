@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-use chrono::{Datelike, Duration, NaiveDate, Utc, Weekday};
+use chrono::{Datelike, Duration, NaiveDate, Timelike, Utc, Weekday};
 use chrono_tz::Europe::Paris;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -8,16 +8,18 @@ use tokio::sync::RwLock;
 use crate::error::AppError;
 
 const RTE_PUBLIC_API: &str = "https://www.services-rte.com/cms/open_data/v1/tempo";
+const RTE_LIGHT_API: &str = "https://www.services-rte.com/cms/open_data/v1/tempoLight";
 const RTE_WEBPAGE_URL: &str = "https://www.services-rte.com/fr/visualisez-les-donnees-publiees-par-rte/calendrier-des-offres-de-fourniture-de-type-tempo.html";
 const TARIFS_API_URL: &str = "https://tabular-api.data.gouv.fr/api/resources/0c3d1d36-c412-4620-8566-e5cbb4fa2b5a/data/?page_size=1&P_SOUSCRITE__exact=6&__id__sort=desc";
 const OPEN_METEO_API: &str = "https://api.open-meteo.com/v1/forecast";
 const FRANCE_LAT: f64 = 46.603354;
 const FRANCE_LON: f64 = 1.888334;
 
-const TEMPO_CACHE_SECONDS: i64 = 30 * 60;
 const TARIFS_CACHE_SECONDS: i64 = 24 * 60 * 60;
 const HISTORY_CACHE_SECONDS: i64 = 6 * 60 * 60;
 const FORECAST_CACHE_SECONDS: i64 = 3 * 60 * 60;
+const PREDICTIONS_CACHE_SECONDS: i64 = 30 * 60;
+const STATE_CACHE_SECONDS: i64 = 60 * 60;
 
 const STOCK_RED_DAYS: i32 = 22;
 const STOCK_WHITE_DAYS: i32 = 43;
@@ -294,6 +296,8 @@ struct TempoCache {
     tarifs: Option<Cached<Option<TempoTarifs>>>,
     history: HashMap<String, Cached<HashMap<String, String>>>,
     forecast: Option<Cached<Vec<ForecastDay>>>,
+    predictions: Option<Cached<TempoPredictionServiceResponse>>,
+    state: Option<Cached<TempoState>>,
 }
 
 #[derive(Debug, Clone)]
@@ -384,6 +388,10 @@ impl TempoService {
     }
 
     pub async fn get_predictions(&self) -> Result<TempoPredictionServiceResponse, AppError> {
+        if let Some(cached) = self.cached_predictions(false).await {
+            return Ok(cached);
+        }
+
         let state = self.get_state().await?;
         let season = state.season.clone();
         let history = self.fetch_history_map(&season).await?;
@@ -405,7 +413,7 @@ impl TempoService {
             predictions.push(prediction);
         }
 
-        Ok(TempoPredictionServiceResponse {
+        let response = TempoPredictionServiceResponse {
             success: true,
             predictions,
             state: Some(TempoPredictionState {
@@ -420,15 +428,26 @@ impl TempoService {
             } else {
                 "hybrid-default-1.0.0".to_string()
             }),
-        })
+        };
+
+        self.cache.write().await.predictions = Some(Cached {
+            value: response.clone(),
+            fetched_at: Utc::now(),
+        });
+
+        Ok(response)
     }
 
     pub async fn get_state(&self) -> Result<TempoState, AppError> {
+        if let Some(cached) = self.cached_state(false).await {
+            return Ok(cached);
+        }
+
         let season = current_season();
         let history = self.fetch_history_map(&season).await?;
         let predictor_state = predictor_state_from_history(&history);
 
-        Ok(TempoState {
+        let response = TempoState {
             success: true,
             season,
             stock_red_remaining: predictor_state.stock_red,
@@ -436,7 +455,14 @@ impl TempoService {
             stock_white_remaining: predictor_state.stock_white,
             stock_white_total: STOCK_WHITE_DAYS,
             consecutive_red: predictor_state.consecutive_red,
-        })
+        };
+
+        self.cache.write().await.state = Some(Cached {
+            value: response.clone(),
+            fetched_at: Utc::now(),
+        });
+
+        Ok(response)
     }
 
     pub async fn get_history(&self, season: Option<&str>) -> Result<TempoHistoryResponse, AppError> {
@@ -564,11 +590,9 @@ impl TempoService {
     }
 
     async fn fetch_tempo_data(&self) -> Result<TempoData, AppError> {
-        let season = current_season();
-        let url = format!("{RTE_PUBLIC_API}?season={season}");
         let response = self
             .client
-            .get(url)
+            .get(RTE_LIGHT_API)
             .header("Accept", "application/json, text/plain, */*")
             .header("Accept-Language", "fr,fr-FR;q=0.8,en-US;q=0.5,en;q=0.3")
             .header("Cache-Control", "no-cache")
@@ -778,8 +802,7 @@ impl TempoService {
     async fn cached_tempo(&self, allow_expired: bool) -> Option<TempoData> {
         let cache = self.cache.read().await;
         let cached = cache.tempo.as_ref()?;
-        let age = Utc::now() - cached.fetched_at;
-        if allow_expired || age < Duration::seconds(TEMPO_CACHE_SECONDS) {
+        if allow_expired || tempo_cache_is_fresh(cached.fetched_at) {
             Some(cached.value.clone())
         } else {
             None
@@ -813,6 +836,28 @@ impl TempoService {
         let cached = cache.forecast.as_ref()?;
         let age = Utc::now() - cached.fetched_at;
         if allow_expired || age < Duration::seconds(FORECAST_CACHE_SECONDS) {
+            Some(cached.value.clone())
+        } else {
+            None
+        }
+    }
+
+    async fn cached_predictions(&self, allow_expired: bool) -> Option<TempoPredictionServiceResponse> {
+        let cache = self.cache.read().await;
+        let cached = cache.predictions.as_ref()?;
+        let age = Utc::now() - cached.fetched_at;
+        if allow_expired || age < Duration::seconds(PREDICTIONS_CACHE_SECONDS) {
+            Some(cached.value.clone())
+        } else {
+            None
+        }
+    }
+
+    async fn cached_state(&self, allow_expired: bool) -> Option<TempoState> {
+        let cache = self.cache.read().await;
+        let cached = cache.state.as_ref()?;
+        let age = Utc::now() - cached.fetched_at;
+        if allow_expired || age < Duration::seconds(STATE_CACHE_SECONDS) {
             Some(cached.value.clone())
         } else {
             None
@@ -1031,6 +1076,22 @@ fn current_season() -> String {
 
 fn paris_today() -> NaiveDate {
     Utc::now().with_timezone(&Paris).date_naive()
+}
+
+fn tempo_cache_is_fresh(fetched_at: chrono::DateTime<Utc>) -> bool {
+    let now = Utc::now().with_timezone(&Paris);
+    let fetched = fetched_at.with_timezone(&Paris);
+
+    if fetched.date_naive() == now.date_naive() && fetched.hour() >= 11 {
+        return true;
+    }
+
+    if fetched.date_naive() == now.date_naive() && now.hour() < 11 {
+        return true;
+    }
+
+    let yesterday = now.date_naive() - Duration::days(1);
+    fetched.date_naive() == yesterday && fetched.hour() >= 11 && now.hour() < 11
 }
 
 fn get_tempo_day_number(date: NaiveDate) -> i32 {

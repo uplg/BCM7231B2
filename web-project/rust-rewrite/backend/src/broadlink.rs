@@ -9,7 +9,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chrono::{DateTime, Utc};
 use rbroadlink::{Device, network::WirelessConnection, traits::DeviceTrait};
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -20,6 +20,8 @@ const DEFAULT_LEARN_TIMEOUT_SECS: u64 = 30;
 pub struct BroadlinkManager {
     codes_path: Arc<PathBuf>,
     codes: Arc<RwLock<StoredCodes>>,
+    discovered_devices: Arc<RwLock<Option<Vec<BroadlinkDiscoveredDevice>>>>,
+    operation_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -119,10 +121,29 @@ impl BroadlinkManager {
         Ok(Self {
             codes_path: Arc::new(codes_path.to_path_buf()),
             codes: Arc::new(RwLock::new(codes)),
+            discovered_devices: Arc::new(RwLock::new(None)),
+            operation_lock: Arc::new(Mutex::new(())),
         })
     }
 
-    pub async fn discover(&self, local_ip: Option<String>) -> Result<Vec<BroadlinkDiscoveredDevice>, AppError> {
+    pub async fn discover(
+        &self,
+        local_ip: Option<String>,
+        force_refresh: bool,
+    ) -> Result<Vec<BroadlinkDiscoveredDevice>, AppError> {
+        if !force_refresh {
+            if let Some(cached) = self.discovered_devices.read().await.clone() {
+                return Ok(cached);
+            }
+        }
+
+        let _guard = self.operation_lock.lock().await;
+        if !force_refresh {
+            if let Some(cached) = self.discovered_devices.read().await.clone() {
+                return Ok(cached);
+            }
+        }
+
         let local_ip = parse_optional_ipv4(local_ip.as_deref())?;
         let devices = tokio::task::spawn_blocking(move || {
             Device::list(local_ip)
@@ -130,6 +151,8 @@ impl BroadlinkManager {
                 .map(|devices| devices.into_iter().map(map_discovered_device).collect::<Vec<_>>())
         })
         .await??;
+
+        *self.discovered_devices.write().await = Some(devices.clone());
 
         Ok(devices)
     }
@@ -140,6 +163,7 @@ impl BroadlinkManager {
         password: Option<String>,
         security_mode: BroadlinkSecurityMode,
     ) -> Result<(), AppError> {
+        let _guard = self.operation_lock.lock().await;
         let task = tokio::task::spawn_blocking(move || {
             let password = password.unwrap_or_default();
             let network = match security_mode {
@@ -166,6 +190,7 @@ impl BroadlinkManager {
         timeout_secs: Option<u64>,
         save_request: Option<LearnCodeSaveRequest>,
     ) -> Result<LearnResult, AppError> {
+        let _guard = self.operation_lock.lock().await;
         let local_ip = parse_optional_ipv4(local_ip.as_deref())?;
         let host_ip = parse_ipv4(&host)?;
         let timeout = Duration::from_secs(timeout_secs.unwrap_or(DEFAULT_LEARN_TIMEOUT_SECS));
@@ -206,6 +231,7 @@ impl BroadlinkManager {
         code_id: Option<String>,
         command: Option<String>,
     ) -> Result<SendResult, AppError> {
+        let _guard = self.operation_lock.lock().await;
         let packet = decode_packet(&packet_base64)?;
         let packet_length = packet.len();
         let local_ip = parse_optional_ipv4(local_ip.as_deref())?;
@@ -543,4 +569,5 @@ mod tests {
         let saved = std::fs::read_to_string(&path).expect("codes file should exist");
         assert!(saved.contains("cool_22_auto"));
     }
+
 }

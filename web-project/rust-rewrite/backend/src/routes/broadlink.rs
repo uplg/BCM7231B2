@@ -16,6 +16,7 @@ use crate::{
 #[serde(rename_all = "camelCase")]
 struct DiscoverQuery {
     local_ip: Option<String>,
+    force_refresh: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,7 +140,10 @@ async fn discover(
     user: AuthenticatedUser,
 ) -> Result<Json<DiscoverResponse>, AppError> {
     let _ = user.0;
-    let devices = state.broadlink.discover(query.local_ip).await?;
+    let devices = state
+        .broadlink
+        .discover(query.local_ip, query.force_refresh.unwrap_or(false))
+        .await?;
     Ok(Json(DiscoverResponse {
         success: true,
         total: devices.len(),

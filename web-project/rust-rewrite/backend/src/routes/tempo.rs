@@ -187,6 +187,7 @@ fn ok_tempo_response(data: TempoData, message: &str, is_cached: bool) -> axum::r
 }
 
 fn tempo_service_error(error: AppError, message: &str) -> axum::response::Response {
+    tracing::warn!(error = %error, "tempo request failed");
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(TempoErrorResponse {

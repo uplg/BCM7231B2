@@ -17,7 +17,7 @@ export default defineConfig({
         target: "http://localhost:3033",
         changeOrigin: true,
         // TODO: remove for rust backend
-        rewrite: (path) => path.replace(/^\/api/, ""),
+        // rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },
   },
