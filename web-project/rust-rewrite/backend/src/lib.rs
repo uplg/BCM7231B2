@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod broadlink;
 pub mod config;
 pub mod error;
 pub mod meross;
@@ -9,6 +10,7 @@ pub mod tuya;
 use std::sync::Arc;
 
 use axum::Router;
+use broadlink::BroadlinkManager;
 use config::Config;
 use error::AppError;
 use routes::auth::{load_users, SharedUsers};
@@ -21,6 +23,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 pub struct AppState {
     pub(crate) config: Arc<Config>,
     pub(crate) users: SharedUsers,
+    pub(crate) broadlink: BroadlinkManager,
     pub(crate) meross: MerossManager,
     pub(crate) tempo: TempoService,
     pub(crate) tuya: TuyaManager,
@@ -33,6 +36,7 @@ pub fn app_from_env() -> Result<Router, AppError> {
 
 pub fn build_app_from_config(config: Arc<Config>) -> Result<Router, AppError> {
     let users = Arc::new(load_users(&config));
+    let broadlink = BroadlinkManager::new(&config.broadlink_codes_path)?;
     let meross = MerossManager::new(&config.meross_devices_path)?;
     let tempo = TempoService::new(config.source_root.clone())?;
     let tuya = TuyaManager::new(&config.devices_path, &config.device_cache_path)?;
@@ -40,6 +44,7 @@ pub fn build_app_from_config(config: Arc<Config>) -> Result<Router, AppError> {
     let state = AppState {
         config,
         users,
+        broadlink,
         meross,
         tempo,
         tuya,
@@ -65,6 +70,7 @@ pub fn build_app(state: AppState) -> Router {
     let api_router = Router::<AppState>::new()
         .merge(routes::root::router())
         .nest("/auth", routes::auth::router())
+        .nest("/broadlink", routes::broadlink::router())
         .nest("/devices", routes::devices::router())
         .nest("/meross", routes::meross::router())
         .nest("/tempo", routes::tempo::router());

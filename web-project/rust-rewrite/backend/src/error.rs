@@ -14,6 +14,8 @@ pub enum AppError {
     Jwt(#[from] jsonwebtoken::errors::Error),
     #[error("{0}")]
     Reqwest(#[from] reqwest::Error),
+    #[error("{0}")]
+    Join(#[from] tokio::task::JoinError),
 }
 
 #[derive(Debug, Serialize)]
@@ -41,7 +43,7 @@ impl AppError {
     fn status(&self) -> StatusCode {
         match self {
             Self::Http { status, .. } => *status,
-            Self::Io(_) | Self::Json(_) | Self::Jwt(_) | Self::Reqwest(_) => {
+            Self::Io(_) | Self::Json(_) | Self::Jwt(_) | Self::Reqwest(_) | Self::Join(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
         }
@@ -54,6 +56,7 @@ impl AppError {
             Self::Json(err) => err.to_string(),
             Self::Jwt(err) => err.to_string(),
             Self::Reqwest(err) => err.to_string(),
+            Self::Join(err) => err.to_string(),
         }
     }
 }

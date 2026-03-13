@@ -469,6 +469,7 @@ fn test_config() -> Config {
         meross_devices_path: source_root.join("meross-devices.json"),
         devices_path: source_root.join("devices.json"),
         device_cache_path: cache_copy,
+        broadlink_codes_path: temp_root.join("broadlink-codes.json"),
         source_root,
     }
 }

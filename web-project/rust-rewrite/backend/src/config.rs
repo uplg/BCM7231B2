@@ -10,13 +10,14 @@ pub struct Config {
     pub meross_devices_path: PathBuf,
     pub devices_path: PathBuf,
     pub device_cache_path: PathBuf,
+    pub broadlink_codes_path: PathBuf,
 }
 
 impl Config {
     pub fn from_env() -> Self {
         let source_root = env::var("CAT_MONITOR_SOURCE_ROOT")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("../cat-monitor"));
+            .unwrap_or_else(|_| default_source_root());
 
         let users_path = env::var("USERS_JSON_PATH")
             .map(PathBuf::from)
@@ -33,6 +34,10 @@ impl Config {
         let device_cache_path = env::var("DEVICE_CACHE_JSON_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| source_root.join("device-cache.json"));
+
+        let broadlink_codes_path = env::var("BROADLINK_CODES_JSON_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| source_root.join("broadlink-codes.json"));
 
         let port = env::var("PORT")
             .ok()
@@ -53,6 +58,16 @@ impl Config {
             meross_devices_path,
             devices_path,
             device_cache_path,
+            broadlink_codes_path,
         }
     }
+}
+
+fn default_source_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("backend has parent")
+        .parent()
+        .expect("rust-rewrite has parent")
+        .join("cat-monitor")
 }
