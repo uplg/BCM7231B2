@@ -7,9 +7,11 @@ default-run = "cat-monitor-rust-backend"
 [dependencies]
 axum = "0.8.8"
 base64 = "0.22.1"
+btleplug = "0.12.0"
 chrono = { version = "0.4.44", features = ["clock", "serde"] }
 chrono-tz = "0.10.4"
 dotenvy = "0.15.7"
+futures = "0.3.32"
 jsonwebtoken = { version = "10.3.0", default-features = false, features = ["rust_crypto"] }
 md5 = "0.8.0"
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "query", "rustls"] }

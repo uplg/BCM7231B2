@@ -11,6 +11,7 @@ import { HueLampCard } from "@/components/devices/HueLampControl";
 import { BroadlinkClimateControl } from "@/components/devices/BroadlinkClimateControl";
 import { MerossPlugCard } from "@/components/devices/MerossPlugControl";
 import { TempoCard } from "@/components/devices/TempoCard";
+import { DashboardSectionHeader } from "@/components/dashboard/DashboardSectionHeader";
 import {
   Utensils,
   Droplets,
@@ -273,35 +274,32 @@ export function DashboardPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <TempoCard />
       {!isHueDisabled && (
         <section className="space-y-4">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-yellow-100 text-yellow-600">
-                <Lightbulb className="h-5 w-5" />
-              </div>
-              <div>
-                <h2 className="text-xl font-bold">{t("hueLamps.title")}</h2>
-                <p className="text-sm text-muted-foreground">{t("hueLamps.subtitle")}</p>
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              className="border-slate-200 bg-white/80 hover:bg-white"
-              onClick={() => scanHueLampsMutation.mutate()}
-              disabled={scanHueLampsMutation.isPending}
-            >
-              {scanHueLampsMutation.isPending ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Search className="mr-2 h-4 w-4" />
-              )}
-              {t("hueLamps.scan")}
-            </Button>
-          </div>
+          <DashboardSectionHeader
+            icon={<Lightbulb className="h-5 w-5" />}
+            iconClassName="bg-yellow-100 text-yellow-600"
+            title={t("hueLamps.title")}
+            description={t("hueLamps.subtitle")}
+            actions={
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-slate-200 bg-white/80 hover:bg-white"
+                onClick={() => scanHueLampsMutation.mutate()}
+                disabled={scanHueLampsMutation.isPending}
+              >
+                {scanHueLampsMutation.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Search className="mr-2 h-4 w-4" />
+                )}
+                {t("hueLamps.scan")}
+              </Button>
+            }
+          />
 
           {isLoadingHueLamps ? (
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -345,15 +343,12 @@ export function DashboardPage() {
       )}
 
       <section className="space-y-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-600">
-            <Plug className="h-5 w-5" />
-          </div>
-          <div>
-            <h2 className="text-xl font-bold">{t("meross.title")}</h2>
-            <p className="text-sm text-muted-foreground">{t("meross.subtitle")}</p>
-          </div>
-        </div>
+        <DashboardSectionHeader
+          icon={<Plug className="h-5 w-5" />}
+          iconClassName="bg-emerald-100 text-emerald-600"
+          title={t("meross.title")}
+          description={t("meross.subtitle")}
+        />
 
         {isLoadingMeross ? (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -384,55 +379,57 @@ export function DashboardPage() {
       </section>
 
       <section className="space-y-4">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="text-xl font-bold">{t("dashboard.tuyaSection")}</h2>
-            <p className="text-sm text-muted-foreground">{t("dashboard.tuyaSubtitle")}</p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <div className="rounded-full border border-slate-200 bg-white px-3 py-1 text-sm text-slate-500">
-              {t("dashboard.deviceCount", { count: data?.total ?? 0 })}
-            </div>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => queryClient.invalidateQueries({ queryKey: ["devices"] })}
-              disabled={isLoading}
-              className="flex-1 border-slate-200 bg-white/80 hover:bg-white sm:flex-none"
-            >
-              <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
-              {t("common.refresh")}
-            </Button>
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => connectAllMutation.mutate()}
-              disabled={connectAllMutation.isPending}
-              className="flex-1 sm:flex-none bg-slate-900 text-white hover:bg-slate-800"
-            >
-              {connectAllMutation.isPending ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Wifi className="mr-2 h-4 w-4" />
-              )}
-              {t("dashboard.connectAll")}
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => disconnectAllMutation.mutate()}
-              disabled={disconnectAllMutation.isPending}
-              className="flex-1 sm:flex-none"
-            >
-              {disconnectAllMutation.isPending ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <WifiOff className="mr-2 h-4 w-4" />
-              )}
-              {t("dashboard.disconnectAll")}
-            </Button>
-          </div>
-        </div>
+        <DashboardSectionHeader
+          icon={<Power className="h-5 w-5" />}
+          iconClassName="bg-slate-100 text-slate-700"
+          title={t("dashboard.tuyaSection")}
+          description={t("dashboard.tuyaSubtitle")}
+          actions={
+            <>
+              <div className="rounded-full border border-slate-200 bg-white px-3 py-1 text-sm text-slate-500">
+                {t("dashboard.deviceCount", { count: data?.total ?? 0 })}
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => queryClient.invalidateQueries({ queryKey: ["devices"] })}
+                disabled={isLoading}
+                className="flex-1 border-slate-200 bg-white/80 hover:bg-white sm:flex-none"
+              >
+                <RefreshCw className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`} />
+                {t("common.refresh")}
+              </Button>
+              <Button
+                variant="default"
+                size="sm"
+                onClick={() => connectAllMutation.mutate()}
+                disabled={connectAllMutation.isPending}
+                className="flex-1 bg-slate-900 text-white hover:bg-slate-800 sm:flex-none"
+              >
+                {connectAllMutation.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Wifi className="mr-2 h-4 w-4" />
+                )}
+                {t("dashboard.connectAll")}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => disconnectAllMutation.mutate()}
+                disabled={disconnectAllMutation.isPending}
+                className="flex-1 sm:flex-none"
+              >
+                {disconnectAllMutation.isPending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <WifiOff className="mr-2 h-4 w-4" />
+                )}
+                {t("dashboard.disconnectAll")}
+              </Button>
+            </>
+          }
+        />
 
         {isLoading ? (
           <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
@@ -456,28 +453,25 @@ export function DashboardPage() {
       </section>
 
       <section className="space-y-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-sky-100 text-sky-600">
-              <Snowflake className="h-5 w-5" />
-            </div>
-            <div>
-              <h2 className="text-xl font-bold">{t("climate.dashboardTitle")}</h2>
-              <p className="text-sm text-muted-foreground">{t("climate.dashboardSubtitle")}</p>
-            </div>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-900"
-            onClick={() => {
-              queryClient.invalidateQueries({ queryKey: ["broadlink", "discover"] });
-              queryClient.invalidateQueries({ queryKey: ["broadlink", "mitsubishi-codes", "msz-hj5va"] });
-            }}
-          >
-            <RefreshCw className="h-4 w-4" />
-          </Button>
-        </div>
+        <DashboardSectionHeader
+          icon={<Snowflake className="h-5 w-5" />}
+          iconClassName="bg-sky-100 text-sky-600"
+          title={t("climate.dashboardTitle")}
+          description={t("climate.dashboardSubtitle")}
+          actions={
+            <Button
+              variant="ghost"
+              size="icon"
+              className="rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+              onClick={() => {
+                queryClient.invalidateQueries({ queryKey: ["broadlink", "discover"] });
+                queryClient.invalidateQueries({ queryKey: ["broadlink", "mitsubishi-codes", "msz-hj5va"] });
+              }}
+            >
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+          }
+        />
 
         <BroadlinkClimateControl defaultModel="msz-hj5va" compact showRefresh={false} />
       </section>

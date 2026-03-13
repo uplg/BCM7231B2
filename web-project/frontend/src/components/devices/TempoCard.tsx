@@ -2,8 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { tempoApi } from "@/lib/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { DashboardSectionHeader } from "@/components/dashboard/DashboardSectionHeader";
 import { Zap, Calendar, ArrowRight, Euro, TrendingUp } from "lucide-react";
 
 type TempoColor = "BLUE" | "WHITE" | "RED" | null;
@@ -179,17 +180,22 @@ export function TempoCard() {
 
   return (
     <Card className="border-0 bg-transparent shadow-none">
-      <CardHeader className="px-0 pb-2">
-        <CardTitle
-          className="flex items-center gap-2 text-base cursor-pointer hover:text-yellow-600 transition-colors group"
-          onClick={() => navigate("/tempo-predictions")}
-        >
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-yellow-100 text-yellow-600">
-            <Calendar className="h-4 w-4" />
-          </div>
-          <span className="flex-1">{t("tempo.title")}</span>
-          <TrendingUp className="h-4 w-4 text-muted-foreground group-hover:text-yellow-600 transition-colors" />
-        </CardTitle>
+      <CardHeader className="px-0 pb-1">
+        <DashboardSectionHeader
+          icon={<Calendar className="h-5 w-5" />}
+          iconClassName="bg-yellow-100 text-yellow-600"
+          title={
+            <button
+              type="button"
+              className="group flex items-center gap-2 text-left transition-colors hover:text-yellow-600"
+              onClick={() => navigate("/tempo-predictions")}
+            >
+              <span>{t("tempo.title")}</span>
+              <TrendingUp className="h-4 w-4 text-muted-foreground transition-colors group-hover:text-yellow-600" />
+            </button>
+          }
+          description={t("tempo.subtitle")}
+        />
       </CardHeader>
       <CardContent className="space-y-4 px-0 pb-0">
         {/* Colors section */}

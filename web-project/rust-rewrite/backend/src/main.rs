@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use cat_monitor_rust_backend::app_from_env;
+use cat_monitor_rust_backend::app_parts_from_env;
 use tokio::net::TcpListener;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -9,7 +9,7 @@ async fn main() {
     dotenvy::dotenv().ok();
     init_tracing();
 
-    let app = app_from_env().expect("failed to build app");
+    let (app, state) = app_parts_from_env().expect("failed to build app");
     let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = std::env::var("PORT")
         .ok()
@@ -28,6 +28,8 @@ async fn main() {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("server error");
+
+    state.shutdown().await;
 }
 
 async fn shutdown_signal() {

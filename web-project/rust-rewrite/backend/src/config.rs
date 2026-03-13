@@ -5,12 +5,15 @@ pub struct Config {
     pub host: String,
     pub port: u16,
     pub jwt_secret: String,
+    pub disable_bluetooth: bool,
     pub source_root: PathBuf,
     pub users_path: PathBuf,
     pub meross_devices_path: PathBuf,
     pub devices_path: PathBuf,
     pub device_cache_path: PathBuf,
     pub broadlink_codes_path: PathBuf,
+    pub hue_lamps_path: PathBuf,
+    pub hue_blacklist_path: PathBuf,
 }
 
 impl Config {
@@ -39,6 +42,23 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|_| source_root.join("broadlink-codes.json"));
 
+        let hue_lamps_path = env::var("HUE_LAMPS_JSON_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| source_root.join("hue-lamps.json"));
+
+        let hue_blacklist_path = env::var("HUE_BLACKLIST_JSON_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| source_root.join("hue-lamps-blacklist.json"));
+
+        let disable_bluetooth = env::var("DISABLE_BLUETOOTH")
+            .map(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
+
         let port = env::var("PORT")
             .ok()
             .or_else(|| env::var("API_PORT").ok())
@@ -53,12 +73,15 @@ impl Config {
             host,
             port,
             jwt_secret,
+            disable_bluetooth,
             source_root,
             users_path,
             meross_devices_path,
             devices_path,
             device_cache_path,
             broadlink_codes_path,
+            hue_lamps_path,
+            hue_blacklist_path,
         }
     }
 }

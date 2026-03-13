@@ -465,11 +465,14 @@ fn test_config() -> Config {
         host: "127.0.0.1".to_string(),
         port: 0,
         jwt_secret: env::var("JWT_SECRET").unwrap_or_else(|_| "super-secret-cat-key-change-me".to_string()),
+        disable_bluetooth: true,
         users_path: source_root.join("users.json"),
         meross_devices_path: source_root.join("meross-devices.json"),
         devices_path: source_root.join("devices.json"),
         device_cache_path: cache_copy,
         broadlink_codes_path: temp_root.join("broadlink-codes.json"),
+        hue_lamps_path: source_root.join("hue-lamps.json"),
+        hue_blacklist_path: source_root.join("hue-lamps-blacklist.json"),
         source_root,
     }
 }
