@@ -319,7 +319,15 @@ ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
 
 # --- Ethernet ---
 ifconfig eth0 up 2>/dev/null || true
-ifconfig eth0 192.168.2.1 netmask 255.255.255.0 up 2>/dev/null || true
+if command -v udhcpc >/dev/null 2>&1; then
+    udhcpc -i eth0 -s /etc/network/udhcpc.script -n -q >/dev/null 2>&1 || true
+fi
+
+IP_ADDR=$(ifconfig eth0 2>/dev/null | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}')
+if [ -z "$IP_ADDR" ]; then
+    ifconfig eth0 192.168.1.109 netmask 255.255.255.0 up 2>/dev/null || true
+    IP_ADDR=$(ifconfig eth0 2>/dev/null | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}')
+fi
 
 # --- Logging ---
 syslogd -C256
@@ -367,12 +375,10 @@ if [ -x /usr/sbin/httpd ]; then
     /usr/sbin/httpd -p 80 -h /usr/share/www
 fi
 
-IP_ADDR=$(ifconfig eth0 2>/dev/null | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}')
-
 echo ""
 echo "============================================"
 echo "  FROG-HACK ready"
-echo "  IP: ${IP_ADDR:-192.168.2.1}"
+echo "  IP: ${IP_ADDR:-192.168.1.109}"
 echo "  SSH:  port 22"
 echo "  HTTP: port 80"
 echo "============================================"
@@ -614,19 +620,30 @@ cat > "$NEWROOT/usr/share/www/index.html" << 'WEBPAGE'
             <div class="info-row"><span class="label">SSH</span><span class="value status-ok">port 22 active</span></div>
             <div class="info-row"><span class="label">HTTP</span><span class="value status-ok">port 80 active</span></div>
             <div class="info-row"><span class="label">Telnet</span><span class="value">disabled</span></div>
-            <div class="info-row"><span class="label">Default IP</span><span class="value">192.168.2.1</span></div>
+            <div class="info-row"><span class="label">IP</span><span class="value" id="device-ip">DHCP (fallback 192.168.1.109)</span></div>
         </div>
 
         <div class="card">
             <h2>Quick Access</h2>
-            <div class="info-row"><span class="label">SSH</span><span class="value"><code>ssh root@192.168.2.1</code></span></div>
-            <div class="info-row"><span class="label">Web</span><span class="value"><code>http://192.168.2.1/</code></span></div>
+            <div class="info-row"><span class="label">SSH</span><span class="value"><code id="ssh-target">ssh root@device-ip</code></span></div>
+            <div class="info-row"><span class="label">Web</span><span class="value"><code id="web-target">http://device-ip/</code></span></div>
+            <div class="info-row"><span class="label">Fallback</span><span class="value"><code>192.168.1.109</code></span></div>
             <div class="info-row"><span class="label">Web root</span><span class="value"><code>/usr/share/www</code></span></div>
             <div class="info-row"><span class="label">USB mount</span><span class="value"><code>/mnt/usb</code></span></div>
         </div>
     </section>
 
     <p class="footer">FROG-HACK &bull; AirTies AIR 7310T reverse engineering project</p>
+
+    <script>
+        (function() {
+            var host = window.location.hostname || "device-ip";
+            var origin = window.location.origin || ("http://" + host + "/");
+            document.getElementById("device-ip").textContent = host + " (DHCP, fallback 192.168.1.109)";
+            document.getElementById("ssh-target").textContent = "ssh root@" + host;
+            document.getElementById("web-target").textContent = origin.replace(/\/$/, "") + "/";
+        })();
+    </script>
 </body>
 </html>
 WEBPAGE
