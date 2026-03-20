@@ -236,7 +236,7 @@
 		};
 
 		/* USB: EHCI x2 + OHCI x2 at 0x10480300/400/500/600 */
-		/* IRQs 69/70/71/72 from /proc/interrupts */
+		/* IRQs 69/70/71/72 from hardware bring-up */
 		ehci0: usb@480300 {
 			compatible = "brcm,bcm7231-ehci", "generic-ehci";
 			reg = <0x480300 0x100>;

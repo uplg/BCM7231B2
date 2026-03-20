@@ -49,6 +49,7 @@ info "Creation de la structure du rootfs..."
 # 1. Structure de repertoires
 # =============================================================================
 mkdir -p "$NEWROOT"/{bin,sbin,usr/{bin,sbin,lib,share/www},lib,etc/{init.d,dropbear,params,network},dev,proc,sys,tmp,var/{run,log,tmp,lib},mnt,media,root,home}
+mkdir -p "$NEWROOT/mnt/usb"
 
 # =============================================================================
 # 2. BusyBox (static, musl, MIPS32 R1 — from build_busybox.sh)
@@ -325,7 +326,7 @@ fi
 
 IP_ADDR=$(ifconfig eth0 2>/dev/null | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}')
 if [ -z "$IP_ADDR" ]; then
-    ifconfig eth0 192.168.1.109 netmask 255.255.255.0 up 2>/dev/null || true
+    ifconfig eth0 192.168.1.10 netmask 255.255.255.0 up 2>/dev/null || true
     IP_ADDR=$(ifconfig eth0 2>/dev/null | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}')
 fi
 
@@ -378,7 +379,7 @@ fi
 echo ""
 echo "============================================"
 echo "  FROG-HACK ready"
-echo "  IP: ${IP_ADDR:-192.168.1.109}"
+echo "  IP: ${IP_ADDR:-192.168.1.10}"
 echo "  SSH:  port 22"
 echo "  HTTP: port 80"
 echo "============================================"
