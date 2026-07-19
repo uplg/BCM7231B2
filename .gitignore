@@ -1,6 +1,9 @@
 # Build output (kernel, busybox, binaries, logs)
 build_output/
 
+# Makefile stamps + downloaded source tarball cache
+build/
+
 # Assembled rootfs tree and squashfs image
 new_rootfs/
 new_rootfs.squashfs

@@ -6,18 +6,20 @@
 # downloaded a single time instead of once per tool (the old scripts each
 # re-fetched it, ~100 MB every build).
 #
-# Build:  docker build --platform linux/amd64 -t AirTies-builder -f docker/Dockerfile.builder .
+# Build:  make builder   (docker build -t airties-builder -f docker/Dockerfile.builder docker)
 # =============================================================================
 FROM --platform=linux/amd64 ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Superset of build deps across all targets (kernel needs bc/flex/bison/libssl/
-# libelf/cpio/kmod; busybox/dropbear/mtd-utils need the rest).
+# libelf/cpio/kmod; busybox/dropbear/mtd-utils need the rest; squashfs-tools
+# packs the rootfs image so the host needs no mksquashfs).
 RUN apt-get update -qq \
     && apt-get install -y -qq \
         build-essential wget xz-utils bzip2 file \
         bc flex bison libssl-dev libelf-dev python3 kmod cpio \
+        squashfs-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Bootlin mips32el--musl--stable-2024.05-1 — targets MIPS32 Release 1 only,

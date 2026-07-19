@@ -83,6 +83,16 @@ cd "$NEWROOT/usr/sbin"; ln -sf dropbearmulti dropbear; ln -sf dropbearmulti drop
 cd "$NEWROOT/usr/bin"; ln -sf ../sbin/dropbearmulti dbclient; ln -sf ../sbin/dropbearmulti ssh; ln -sf ../sbin/dropbearmulti scp
 cd "$BASEDIR"
 
+# --- Flash tools: let the box reflash itself over SSH (make flash-rootfs) ---
+for t in flash_erase nandwrite; do
+    if [ -f "$OUTDIR/$t" ]; then
+        info "+ $t"
+        cp "$OUTDIR/$t" "$NEWROOT/usr/sbin/$t"; chmod 755 "$NEWROOT/usr/sbin/$t"
+    else
+        warn "$t not built — on-device reflash (make flash-rootfs) won't work"
+    fi
+done
+
 # --- Optional diagnostic tools (included only if built) ---
 # init_raw wins over init_test for the /sbin/init_test slot (raw-syscall diag).
 if   [ -f "$OUTDIR/init_raw" ];  then info "+ init_raw (as /sbin/init_test)";  cp "$OUTDIR/init_raw"  "$NEWROOT/sbin/init_test"; chmod 755 "$NEWROOT/sbin/init_test"
@@ -102,8 +112,10 @@ nobody:x:65534:65534:nobody:/nonexistent:/bin/false
 sshd:x:22:22:sshd:/var/run/sshd:/bin/false
 EOF
 
+# root password: blabliblou — hash verified against python crypt.crypt()
+# (the previous hash matched no known password and locked the box out)
 cat > "$NEWROOT/etc/shadow" << 'EOF'
-root:$6$AirTies$h0z5DNs9Bz698W.NvMHAtEP/FFoVxkd9vNriq9NatHS5XpYV.0LhxhnsdbD2Krl5Qqo8R7nZAsK5BiSktpfbi0:0:0:99999:7:::
+root:$6$AirTies$6WDkfDDo9bSei7k78mjFRZ/qi1HkKcgxfPr26wFzVBx/lt5pSJ4wbqxhpXyoGSBoHv1JvI9jBdC5ZHuuZ55EA1:0:0:99999:7:::
 daemon:x:1:1:daemon:/usr/sbin:/bin/false
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false
 sshd:x:22:22:sshd:/var/run/sshd:/bin/false
@@ -212,7 +224,7 @@ fi
 
 IP_ADDR=$(ifconfig eth0 2>/dev/null | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}')
 if [ -z "$IP_ADDR" ]; then
-    ifconfig eth0 192.168.1.10 netmask 255.255.255.0 up 2>/dev/null || true
+    ifconfig eth0 192.168.2.1 netmask 255.255.255.0 up 2>/dev/null || true
     IP_ADDR=$(ifconfig eth0 2>/dev/null | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}')
 fi
 
@@ -258,7 +270,7 @@ fi
 echo ""
 echo "============================================"
 echo "  AirTies ready"
-echo "  IP: ${IP_ADDR:-192.168.1.10}"
+echo "  IP: ${IP_ADDR:-192.168.2.1}"
 echo "  SSH:  port 22"
 echo "  HTTP: port 80"
 echo "============================================"
@@ -401,13 +413,13 @@ cat > "$NEWROOT/usr/share/www/index.html" << 'WEBPAGE'
             <div class="info-row"><span class="label">SSH</span><span class="value status-ok">port 22 active</span></div>
             <div class="info-row"><span class="label">HTTP</span><span class="value status-ok">port 80 active</span></div>
             <div class="info-row"><span class="label">Telnet</span><span class="value">disabled</span></div>
-            <div class="info-row"><span class="label">IP</span><span class="value" id="device-ip">DHCP (fallback 192.168.1.10)</span></div>
+            <div class="info-row"><span class="label">IP</span><span class="value" id="device-ip">DHCP (fallback 192.168.2.1)</span></div>
         </div>
         <div class="card">
             <h2>Quick Access</h2>
             <div class="info-row"><span class="label">SSH</span><span class="value"><code id="ssh-target">ssh root@device-ip</code></span></div>
             <div class="info-row"><span class="label">Web</span><span class="value"><code id="web-target">http://device-ip/</code></span></div>
-            <div class="info-row"><span class="label">Fallback</span><span class="value"><code>192.168.1.10</code></span></div>
+            <div class="info-row"><span class="label">Fallback</span><span class="value"><code>192.168.2.1</code></span></div>
             <div class="info-row"><span class="label">Web root</span><span class="value"><code>/usr/share/www</code></span></div>
             <div class="info-row"><span class="label">USB mount</span><span class="value"><code>/mnt/usb</code></span></div>
         </div>
@@ -417,7 +429,7 @@ cat > "$NEWROOT/usr/share/www/index.html" << 'WEBPAGE'
         (function() {
             var host = window.location.hostname || "device-ip";
             var origin = window.location.origin || ("http://" + host + "/");
-            document.getElementById("device-ip").textContent = host + " (DHCP, fallback 192.168.1.10)";
+            document.getElementById("device-ip").textContent = host + " (DHCP, fallback 192.168.2.1)";
             document.getElementById("ssh-target").textContent = "ssh root@" + host;
             document.getElementById("web-target").textContent = origin.replace(/\/$/, "") + "/";
         })();

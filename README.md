@@ -48,7 +48,7 @@ All binaries target **MIPS32 Release 1** (the BMIPS4380 only supports R1).
 ### UART Console
 
 ```bash
-./AirTies-.sh connect
+make connect
 ```
 
 Parameters: 115200 8N1. Interrupt CFE boot with Ctrl+C for `CFE>` prompt.
@@ -69,31 +69,37 @@ networksetup -setmanual "Ethernet" 192.168.2.2 255.255.255.0
 
 ## Build & Flash Procedure
 
+Everything is driven by the top-level `Makefile` (run `make help` for the
+full target list). The Docker builder image (`make builder`) bakes the
+toolchain in once; the kernel source tree lives in a named Docker volume so
+rebuilds are incremental; source tarballs are cached in `build/dl/`.
+
 ### Step 1: Build everything
 
 ```bash
-# Build BusyBox (static, musl, MIPS32 R1)
-./build_busybox.sh          # -> build_output/busybox (1.6 MB)
+make all            # = make kernel + make squashfs (builds everything below)
 
-# Build rootfs (assembles everything, no glibc)
-./build_rootfs.sh           # -> new_rootfs/
+# Or piece by piece:
+make kernel         # Linux $(KERNEL_VERSION) -> build_output/vmlinux (< 7 MB ELF)
+make busybox        # static BusyBox        -> build_output/busybox
+make dropbear       # static Dropbear SSH   -> build_output/dropbearmulti
+make mtdutils       # flash_erase/nandwrite -> build_output/ (also shipped in rootfs)
+make tools          # diagnostic tools (ephy_*, genet_dump, ...)
+make squashfs       # rootfs tree + new_rootfs.squashfs
 
-# Create squashfs image
-mksquashfs new_rootfs new_rootfs.squashfs -comp gzip -b 131072 -all-root -noappend
-
-# Build kernel (Linux 6.18.16, built-in DTB, ~6.2 MB ELF)
-./build_kernel.sh           # -> build_output/vmlinux
+# Default is 7.1.4 (latest stable, 2026-07): all BCM7231 patches apply,
+# 5.5 MB ELF. Fallback to the LTS branch if mainline misbehaves:
+make kernel KERNEL_VERSION=6.18.39
+make kernel-clean   # drop the persistent kernel trees (full rebuild)
 ```
 
 ### Step 2: Prepare TFTP
 
 ```bash
-sudo cp build_output/vmlinux /private/tftpboot/vmlinux
-sudo cp new_rootfs.squashfs /private/tftpboot/new_rootfs.squashfs
-sudo launchctl load -F /System/Library/LaunchDaemons/tftp.plist
+make tftp           # copies vmlinux + squashfs to /private/tftpboot, starts tftpd (sudo)
 ```
 
-### Step 3: Flash via CFE
+### Step 3: Flash via CFE (first flash / recovery)
 
 Interrupt boot with Ctrl+C, then:
 
@@ -105,6 +111,18 @@ CFE> boot nandflash0.kernel:
 ```
 
 Flash rootfs first, then kernel. CFE boots ELF directly (built-in ELF loader).
+
+### Iterating: reflash over SSH (no CFE needed)
+
+Once the custom firmware runs, the box carries its own `flash_erase` +
+`nandwrite`, so the loop is just:
+
+```bash
+make squashfs flash-rootfs    # rebuild rootfs, flash mtd5 via SSH, reboot
+make kernel flash-kernel      # rebuild kernel, flash mtd4 via SSH, reboot
+```
+
+If a flash goes wrong, the CFE/TFTP path above always remains as recovery.
 
 ### Step 4: Boot
 
@@ -152,10 +170,7 @@ The following optional static tools are still useful for low-level diagnosis :
 Build them with:
 
 ```bash
-./build_ephy_init.sh
-./build_ephy_diag.sh
-./build_genet_dump.sh
-./build_rootfs.sh
+make tools squashfs
 ```
 
 Useful manual commands on the box:
@@ -185,7 +200,10 @@ Flash devices: `nandflash0.cfe`, `nandflash0.kernel`, `nandflash0.rootfs`, `nand
 
 ## Kernel Configuration Highlights
 
-Linux 6.18.16 LTS — aggressively minimal for < 7 MB ELF:
+Linux 7.1.x (version pinned by `KERNEL_VERSION` in the Makefile; 6.18 LTS
+remains the tested fallback) — aggressively minimal for < 7 MB ELF. The
+config fragment lives in `kernel/config/airties.config`, merged onto
+`bmips_stb_defconfig`:
 
 - **Built-in DTB** (`CONFIG_BUILTIN_DTB`) — CFE does not pass DTB
 - **No loadable modules** (`CONFIG_MODULES=n`) — everything built-in
@@ -231,26 +249,19 @@ Linux 6.18.16 LTS — aggressively minimal for < 7 MB ELF:
   IRQ table {EHCI 69,70 / OHCI 71,72}, `bchip_early_setup` genet_pdata
   {25,26}, SATA static resource {0x10181000, 41}).
 - The diagnostic printks (`AirTies- isr1 pre-clear`, probe/open/timeout
-  dumps) from `kernel/patch_bcmgenet_debug.py` are still applied; on a healthy
-  boot the `pre-clear` lines appear as soon as eth0 opens.
+  dumps) from `kernel/patch_bcmgenet_debug.py` are **no longer applied by
+  default** now that the IRQ root cause is fixed. Re-enable them with
+  `make kernel GENET_DEBUG=1` (forces one full rebuild when toggling, since
+  the persistent source tree is re-extracted).
 
-### Common commands :
+### Common commands
 
-#### Rebuild rootfs + squashfs (Docker)
-./build_rootfs.sh
-#### Then mksquashfs
-#### Rebuild kernel (Docker)
-./build_kernel.sh
-#### Copy artifacts to TFTP server
-sudo cp build_output/vmlinux /private/tftpboot/vmlinux
-sudo cp new_rootfs.squashfs /private/tftpboot/new_rootfs.squashfs
-#### Ensure TFTP server running
-sudo launchctl load -F /System/Library/LaunchDaemons/tftp.plist
-#### CFE connect + flash
-CFE> ifconfig eth0 -addr=192.168.2.1 -mask=255.255.255.0 -gw=192.168.2.2
-
-CFE> flash 192.168.2.2:new_rootfs.squashfs nandflash0.rootfs -noheader
-
-CFE> flash 192.168.2.2:vmlinux nandflash0.kernel -noheader
-
-CFE> boot nandflash0.kernel:
+```bash
+make help             # list all targets
+make all              # kernel + squashfs
+make tftp             # stage artifacts for CFE flashing (prints CFE commands)
+make flash-rootfs     # reflash mtd5 over SSH + reboot (iteration)
+make flash-kernel     # reflash mtd4 over SSH + reboot (iteration)
+make connect          # UART console (picocom, logged to logs/)
+make cfe-help         # print the CFE flash commands
+```
