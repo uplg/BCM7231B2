@@ -1,0 +1,363 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * BCM7231 SoC device tree (BMIPS4380 dual-core)
+ *
+ * Adapted from bcm7362.dtsi for the AirTies AIR 7310T (BCM7231B2).
+ * Register addresses extracted from vendor kernel 3.3.8-2.3-betty dmesg/iomem.
+ *
+ * Key differences from BCM7362:
+ *   - UART base: 0x406900 (vs 0x406800)
+ *   - Different L1 interrupt assignments
+ *   - mips-hpt-frequency: 297010000 (594 MHz / 2)
+ *   - Two USB EHCI + two USB OHCI controllers
+ *   - SATA (strict-ahci) at 0x181000
+ */
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	compatible = "brcm,bcm7231";
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		mips-hpt-frequency = <297010000>;
+
+		cpu@0 {
+			compatible = "brcm,bmips4380";
+			device_type = "cpu";
+			reg = <0>;
+		};
+
+		cpu@1 {
+			compatible = "brcm,bmips4380";
+			device_type = "cpu";
+			reg = <1>;
+		};
+	};
+
+	aliases {
+		uart0 = &uart0;
+	};
+
+	cpu_intc: interrupt-controller {
+		#address-cells = <0>;
+		compatible = "mti,cpu-interrupt-controller";
+
+		interrupt-controller;
+		#interrupt-cells = <1>;
+	};
+
+	clocks {
+		uart_clk: uart_clk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <81000000>;
+		};
+
+		upg_clk: upg_clk {
+			compatible = "fixed-clock";
+			#clock-cells = <0>;
+			clock-frequency = <27000000>;
+		};
+	};
+
+	rdb {
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		compatible = "simple-bus";
+		ranges = <0 0x10000000 0x01000000>;
+
+		periph_intc: interrupt-controller@411400 {
+			compatible = "brcm,bcm7038-l1-intc";
+			reg = <0x411400 0x30>, <0x411600 0x30>;
+
+			interrupt-controller;
+			#interrupt-cells = <1>;
+
+			interrupt-parent = <&cpu_intc>;
+			interrupts = <2>, <3>;
+		};
+
+		sun_l2_intc: interrupt-controller@403000 {
+			compatible = "brcm,l2-intc";
+			reg = <0x403000 0x30>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			interrupt-parent = <&periph_intc>;
+			interrupts = <48>;
+		};
+
+		gisb-arb@400000 {
+			compatible = "brcm,bcm7400-gisb-arb";
+			reg = <0x400000 0xdc>;
+			native-endian;
+			interrupt-parent = <&sun_l2_intc>;
+			interrupts = <0>, <2>;
+			brcm,gisb-arb-master-mask = <0x2f3>;
+			brcm,gisb-arb-master-names = "ssp_0", "cpu_0", "bsp_0",
+						     "rdc_0", "raaga_0",
+						     "avd_0", "jtag_0";
+		};
+
+		upg_irq0_intc: interrupt-controller@406600 {
+			compatible = "brcm,bcm7120-l2-intc";
+			reg = <0x406600 0x8>;
+
+			/*
+			 * int-map-mask: one entry per parent IRQ.
+			 *   Parent 56 (upg_main): 0x4f = bits 0,1,2,3,6
+			 *     bit 0 = UPG Timer
+			 *     bit 1 = UART0 (serial@406900)
+			 *     bit 2 = UART1 (serial@406940)
+			 *     bit 3 = UART2 (serial@406980)
+			 *     bit 6 = IRB/misc
+			 *   Parent 54 (upg_bsc): 0x7000000 = bits 24,25,26
+			 *     BSC/I2C channels
+			 *
+			 * Previous value <0x44> only covered bits 2,6 — all
+			 * three UARTs and the timer were unreachable via L2,
+			 * causing all UART IRQs to be silently dropped.
+			 */
+			brcm,int-map-mask = <0x4f>, <0x7000000>;
+
+			/*
+			 * int-fwd-mask: bits forwarded directly to L1,
+			 * bypassing L2 logic.  The driver permanently masks
+			 * these in the L2 enable register.
+			 *
+			 * 0x70000 = bits 16,17,18 (typically I2C/BSC on
+			 * BCM7231 UPG).  Keep as-is — these are not UARTs
+			 * and the vendor kernel uses direct forwarding for
+			 * BSC channels on some SoCs.
+			 */
+			brcm,int-fwd-mask = <0x70000>;
+
+			interrupt-controller;
+			#interrupt-cells = <1>;
+
+			interrupt-parent = <&periph_intc>;
+			interrupts = <56>, <54>;
+			interrupt-names = "upg_main", "upg_bsc";
+		};
+
+		sun_top_ctrl: syscon@404000 {
+			compatible = "brcm,bcm7231-sun-top-ctrl", "syscon";
+			reg = <0x404000 0x51c>;
+			native-endian;
+		};
+
+		reboot {
+			compatible = "brcm,brcmstb-reboot";
+			syscon = <&sun_top_ctrl 0x304 0x308>;
+		};
+
+		/*
+		 * Watchdog: bcm7038-wdt at 0x104066a8
+		 * Same address as BCM7362 (matching UPG register layout).
+		 * CFE enables a ~10s hardware watchdog; without this driver,
+		 * Linux cannot pet/disable it and the box reboots.
+		 */
+		watchdog: watchdog@4066a8 {
+			compatible = "brcm,bcm7038-wdt";
+			reg = <0x4066a8 0x14>;
+			clocks = <&upg_clk>;
+			status = "disabled";
+		};
+
+			/*
+		 * UARTs at 0x10406900/940/980 (from dmesg: serial8250)
+		 *
+		 * Interrupts omitted — the 8250 driver falls back to
+		 * timer-based polling for both TX and RX.
+		 *
+		 * The upg_irq0_intc int-map-mask now covers the UART
+		 * bits (0x4f includes bits 1,2,3) so L2 routing is
+		 * correct, but we keep UARTs in polling mode until
+		 * IRQ delivery is validated on hardware.
+		 */
+		uart0: serial@406900 {
+			compatible = "ns16550a";
+			reg = <0x406900 0x20>;
+			reg-io-width = <0x4>;
+			reg-shift = <0x2>;
+			native-endian;
+			clocks = <&uart_clk>;
+			status = "disabled";
+		};
+
+		uart1: serial@406940 {
+			compatible = "ns16550a";
+			reg = <0x406940 0x20>;
+			reg-io-width = <0x4>;
+			reg-shift = <0x2>;
+			native-endian;
+			clocks = <&uart_clk>;
+			status = "disabled";
+		};
+
+		uart2: serial@406980 {
+			compatible = "ns16550a";
+			reg = <0x406980 0x20>;
+			reg-io-width = <0x4>;
+			reg-shift = <0x2>;
+			native-endian;
+			clocks = <&uart_clk>;
+			status = "disabled";
+		};
+
+		/* Ethernet: GENET v2 follows upstream BCM7358/7360 wiring on periph_intc */
+		enet0: ethernet@430000 {
+			phy-mode = "internal";
+			phy-handle = <&phy1>;
+			mac-address = [ 00 10 18 36 23 1a ];
+			compatible = "brcm,genet-v2";
+			#address-cells = <0x1>;
+			#size-cells = <0x1>;
+			reg = <0x430000 0x4c8c>;
+			interrupts = <24>, <25>;
+			interrupt-parent = <&periph_intc>;
+			status = "disabled";
+
+			mdio@e14 {
+				compatible = "brcm,genet-mdio-v2";
+				#address-cells = <0x1>;
+				#size-cells = <0x0>;
+				reg = <0xe14 0x8>;
+
+				phy1: ethernet-phy@1 {
+					compatible = "brcm,40nm-ephy", "ethernet-phy-ieee802.3-c22";
+					max-speed = <100>;
+					reg = <0x1>;
+				};
+			};
+		};
+
+		/*
+		 * USB: EHCI x2 + OHCI x2 at 0x10480300/400/500/600
+		 *
+		 * L1 bits extracted from the vendor 3.3.8 kernel binary
+		 * (brcm_add_usb_host IRQ table {69,70,74,75 / 71,72,76,77},
+		 * vendor numbering = L1 bit + 1, calibrated against GENET
+		 * which the vendor registers as 25/26 for L1 bits 24/25):
+		 *   EHCI0 @480300 = 68   EHCI1 @480500 = 69
+		 *   OHCI0 @480400 = 70   OHCI1 @480600 = 71
+		 * Same interleave as upstream bcm7346.dtsi.  The previous
+		 * +1 values (69-72) made lines 69/70/71 storm at boot
+		 * ("irq NN: nobody cared") until the kernel disabled them.
+		 */
+		ehci0: usb@480300 {
+			compatible = "brcm,bcm7231-ehci", "generic-ehci";
+			reg = <0x480300 0x100>;
+			native-endian;
+			interrupt-parent = <&periph_intc>;
+			interrupts = <68>;
+			status = "disabled";
+		};
+
+		ohci0: usb@480400 {
+			compatible = "brcm,bcm7231-ohci", "generic-ohci";
+			reg = <0x480400 0x100>;
+			native-endian;
+			no-big-frame-no;
+			interrupt-parent = <&periph_intc>;
+			interrupts = <70>;
+			status = "disabled";
+		};
+
+		ehci1: usb@480500 {
+			compatible = "brcm,bcm7231-ehci", "generic-ehci";
+			reg = <0x480500 0x100>;
+			native-endian;
+			interrupt-parent = <&periph_intc>;
+			interrupts = <69>;
+			status = "disabled";
+		};
+
+		ohci1: usb@480600 {
+			compatible = "brcm,bcm7231-ohci", "generic-ohci";
+			reg = <0x480600 0x100>;
+			native-endian;
+			no-big-frame-no;
+			interrupt-parent = <&periph_intc>;
+			interrupts = <71>;
+			status = "disabled";
+		};
+
+		/* HIF L2 interrupt controller (for NAND) */
+		hif_l2_intc: interrupt-controller@411000 {
+			compatible = "brcm,l2-intc";
+			reg = <0x411000 0x30>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			interrupt-parent = <&periph_intc>;
+			interrupts = <30>;
+		};
+
+		/*
+		 * NAND: brcmnand-v5.0 at 0x10412800
+		 *
+		 * Interrupt intentionally omitted to force polling mode.
+		 * The hif_l2_intc is edge-triggered and CFE leaves the
+		 * NAND controller with CTLRDY asserted, causing the
+		 * first command's completion edge to be lost ~50% of boots.
+		 * Polling mode is reliable and has negligible overhead for
+		 * a 128MB NAND.
+		 */
+		nand: nand@412800 {
+			compatible = "brcm,brcmnand-v5.0", "brcm,brcmnand";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			reg-names = "nand";
+			reg = <0x412800 0x400>;
+			status = "disabled";
+		};
+
+		/*
+		 * SATA: strict-ahci at 0x10181000, L1 bit 40.
+		 * Vendor kernel static resource: MEM 0x10181000 + IRQ 41,
+		 * vendor numbering = L1 bit + 1 (was wrongly 41 here).
+		 */
+		sata: sata@181000 {
+			compatible = "brcm,bcm7425-ahci", "brcm,sata3-ahci";
+			reg-names = "ahci", "top-ctrl";
+			reg = <0x181000 0xa9c>, <0x180020 0x1c>;
+			interrupt-parent = <&periph_intc>;
+			interrupts = <40>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+
+			sata0: sata-port@0 {
+				reg = <0>;
+				phys = <&sata_phy0>;
+			};
+
+			sata1: sata-port@1 {
+				reg = <1>;
+				phys = <&sata_phy1>;
+			};
+		};
+
+		sata_phy: sata-phy@180100 {
+			compatible = "brcm,bcm7425-sata-phy", "brcm,phy-sata3";
+			reg = <0x180100 0x0eff>;
+			reg-names = "phy";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+
+			sata_phy0: sata-phy@0 {
+				reg = <0>;
+				#phy-cells = <0>;
+			};
+
+			sata_phy1: sata-phy@1 {
+				reg = <1>;
+				#phy-cells = <0>;
+			};
+		};
+	};
+};

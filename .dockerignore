@@ -1,0 +1,10 @@
+# Keep the docker build context tiny — the builder image needs none of this.
+.git
+build_output
+new_rootfs
+new_rootfs.squashfs
+rootfs_extracted
+backup
+logs
+.ruff_cache
+**/.DS_Store
