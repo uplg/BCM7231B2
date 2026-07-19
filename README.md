@@ -87,8 +87,8 @@ make mtdutils       # flash_erase/nandwrite -> build_output/ (also shipped in ro
 make tools          # diagnostic tools (ephy_*, genet_dump, ...)
 make squashfs       # rootfs tree + new_rootfs.squashfs
 
-# Default is 7.1.4 (latest stable, 2026-07): all BCM7231 patches apply,
-# 5.5 MB ELF. Fallback to the LTS branch if mainline misbehaves:
+# Default is 7.1.4 (latest stable, 2026-07): boot-tested on the device,
+# eth0/SSH functional. Fallback to the LTS branch if needed:
 make kernel KERNEL_VERSION=6.18.39
 make kernel-clean   # drop the persistent kernel trees (full rebuild)
 ```
@@ -224,7 +224,20 @@ config fragment lives in `kernel/config/airties.config`, merged onto
 6. Hardened: root password `blabliblou`, telnet disabled
 7. Static IP fallback 192.168.2.1
 
-### Phase 2 — Modern kernel 6.18.16 LTS: NEARLY COMPLETE (USB/SATA IRQ off-by-one fixed in DTS, pending on-device validation)
+### Phase 3 — Mainline 7.1.4 + Makefile rework: COMPLETE (2026-07-20)
+
+1. Repo re-architected around a top-level Makefile (Docker builder image,
+   persistent kernel tree, cached tarballs, on-device SSH reflash)
+2. Kernel bumped 6.18.16 → 7.1.4 (latest stable) — all BCM7231 patches
+   apply unchanged, GENET debug printks now opt-in (`GENET_DEBUG=1`)
+3. Fixed root shadow hash (old one matched no known password), fixed
+   static fallback IP (192.168.1.10 → 192.168.2.1)
+4. **Boot-tested on the device: 7.1.4 boots, eth0/SSH/HTTP all functional,
+   login OK (root/blabliblou)**
+5. **IRQ off-by-one fix validated on hardware**: USB on 68-71, SATA on 40,
+   GENET on 24/25 — no spurious interrupt storms, no `nobody cared`, ERR: 0
+
+### Phase 2 — Modern kernel 6.18 LTS: COMPLETE (USB/SATA IRQ off-by-one fixed in DTS)
 
 1. Created BCM7231 device tree (bcm7231.dtsi + board DTS)
 2. Created Docker-based kernel build script
