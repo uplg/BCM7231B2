@@ -73,6 +73,29 @@ config DT_BCM7231_AIRTIES\
 ' arch/mips/bmips/Kconfig
 fi
 
+# --- Driver: BCM7231 KIR (IR receiver, Ruwido remote) — built-in ---
+# Register programming engineered from stock nexus.ko (BKIR_*).
+echo "[*] Installing BCM7231 KIR driver..."
+cp /work/kernel/bcm7231-kir.c drivers/input/keyboard/
+
+grep -q 'bcm7231-kir' drivers/input/keyboard/Makefile || \
+    echo 'obj-$(CONFIG_KEYBOARD_BCM7231_KIR) += bcm7231-kir.o' \
+        >> drivers/input/keyboard/Makefile
+
+if ! grep -q 'KEYBOARD_BCM7231_KIR' drivers/input/keyboard/Kconfig; then
+    sed -i '$ i \
+config KEYBOARD_BCM7231_KIR\
+\ttristate "BCM7231 KIR keyboard/IR receiver"\
+\tdepends on INPUT_KEYBOARD\
+\thelp\
+\t  BCM7231 KIR (keyboard/IR receiver) input driver for the\
+\t  AirTies Ruwido remote.  Register programming\
+\t  from the stock nexus.ko blob.\
+' drivers/input/keyboard/Kconfig
+fi
+grep -q 'KEYBOARD_BCM7231_KIR' drivers/input/keyboard/Kconfig || \
+    { echo "!! keyboard/Kconfig patch failed"; exit 1; }
+
 # --- Patch: BCM7231 internal EPHY (PHY ID 0x600d8690, 40nm like 7346/7362) ---
 if ! grep -q 'PHY_ID_BCM7231' include/linux/brcmphy.h; then
     echo "[*] Patching brcmphy.h (PHY_ID_BCM7231)..."

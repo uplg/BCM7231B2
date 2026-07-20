@@ -212,6 +212,28 @@
 			status = "disabled";
 		};
 
+		/*
+		 * KIR (keyboard/IR receiver) — Ruwido remote on channel 0.
+		 *
+		 * Engineered from stock nexus.ko (BKIR_* magnum driver):
+		 *   - 3 channel windows of 0x40 bytes at 0x4088c0/900/940
+		 *   - KIR_TOP routing register at 0x408b80 (bit0 = ch0)
+		 *   - IRQ: dedicated L1 hwirq 60, measured on hardware
+		 *     (2026-07-20, kir_probe: L1 W1 bit 28 asserts on every
+		 *     frame and deasserts on STATUS ack; UPG IRQ0 uninvolved).
+		 *     The earlier "BINT id 0x73 = L1 bit 115" reading of
+		 *     nexus.ko was wrong — the L1 only has 96 lines.
+		 * The block is fully programmable (CIR param file); the Ruwido
+		 * timing set is replayed by the driver (nexus protocol 0x17).
+		 */
+		kir: ir@408800 {
+			compatible = "brcm,bcm7231-kir";
+			reg = <0x408800 0x400>;
+			interrupt-parent = <&periph_intc>;
+			interrupts = <60>;
+			status = "disabled";
+		};
+
 		/* Ethernet: GENET v2 follows upstream BCM7358/7360 wiring on periph_intc */
 		enet0: ethernet@430000 {
 			phy-mode = "internal";

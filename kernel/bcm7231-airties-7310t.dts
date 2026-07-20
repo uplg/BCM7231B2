@@ -119,3 +119,7 @@
 &watchdog {
 	status = "okay";
 };
+
+&kir {
+	status = "okay";
+};
