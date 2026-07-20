@@ -38,4 +38,8 @@ RUN CROSS=$(ls /opt/toolchain/bin/*-gcc | head -1 | sed 's/-gcc$//' | xargs base
     && echo "$CROSS" > /opt/cross-prefix \
     && echo "Cross prefix: $CROSS"
 
+# CMake for lighttpd (its release tarballs no longer ship autotools configure).
+# Kept as a separate late layer so adding it doesn't invalidate the toolchain cache.
+RUN apt-get update -qq && apt-get install -y -qq cmake && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /work

@@ -15,9 +15,11 @@ KERNEL_VERSION   ?= 7.1.4
 # (kernel/patch_bcmgenet_debug.py). Off by default since the IRQ
 # off-by-one root cause was fixed in the DTS.
 GENET_DEBUG      ?= 0
-BUSYBOX_VERSION  ?= 1.37.0
-DROPBEAR_VERSION ?= 2020.81
+BUSYBOX_VERSION  ?= 1.38.0
+DROPBEAR_VERSION ?= 2026.92
 MTDUTILS_VERSION ?= 2.1.2
+LIGHTTPD_VERSION ?= 1.4.85
+MBEDTLS_VERSION  ?= 3.6.7
 
 BUILDER_IMAGE ?= airties-builder
 KBUILD_VOLUME ?= airties-kbuild
@@ -86,18 +88,34 @@ kernel-clean: ## Drop the persistent kernel build volume (forces full rebuild)
 # -----------------------------------------------------------------------------
 # Userland components
 # -----------------------------------------------------------------------------
-$(OUT)/busybox: scripts/bb-build.sh $(STAMP)/builder.stamp
+# Version stamps: bumping a *_VERSION variable invalidates the artifact.
+$(STAMP)/busybox-$(BUSYBOX_VERSION).version:
+	@mkdir -p $(STAMP); rm -f $(STAMP)/busybox-*.version; touch $@
+$(STAMP)/dropbear-$(DROPBEAR_VERSION).version:
+	@mkdir -p $(STAMP); rm -f $(STAMP)/dropbear-*.version; touch $@
+$(STAMP)/mtdutils-$(MTDUTILS_VERSION).version:
+	@mkdir -p $(STAMP); rm -f $(STAMP)/mtdutils-*.version; touch $@
+$(STAMP)/lighttpd-$(LIGHTTPD_VERSION)-$(MBEDTLS_VERSION).version:
+	@mkdir -p $(STAMP); rm -f $(STAMP)/lighttpd-*.version; touch $@
+
+$(OUT)/busybox: scripts/bb-build.sh $(STAMP)/builder.stamp $(STAMP)/busybox-$(BUSYBOX_VERSION).version
 	$(DOCKER_RUN) env BUSYBOX_VERSION=$(BUSYBOX_VERSION) bash scripts/bb-build.sh
 
 busybox: $(OUT)/busybox ## Build static BusyBox $(BUSYBOX_VERSION)
 
-$(OUT)/dropbearmulti: scripts/dropbear-build.sh $(STAMP)/builder.stamp
+$(OUT)/dropbearmulti: scripts/dropbear-build.sh $(STAMP)/builder.stamp $(STAMP)/dropbear-$(DROPBEAR_VERSION).version
 	$(DOCKER_RUN) env DROPBEAR_VERSION=$(DROPBEAR_VERSION) bash scripts/dropbear-build.sh
 
 dropbear: $(OUT)/dropbearmulti ## Build static Dropbear SSH $(DROPBEAR_VERSION)
 
+$(OUT)/lighttpd: scripts/lighttpd-build.sh $(STAMP)/builder.stamp $(STAMP)/lighttpd-$(LIGHTTPD_VERSION)-$(MBEDTLS_VERSION).version
+	$(DOCKER_RUN) env LIGHTTPD_VERSION=$(LIGHTTPD_VERSION) MBEDTLS_VERSION=$(MBEDTLS_VERSION) \
+		bash scripts/lighttpd-build.sh
+
+lighttpd: $(OUT)/lighttpd ## Build static lighttpd $(LIGHTTPD_VERSION) (HTTP/2, TLS via mbedTLS)
+
 # (stamp file: macOS make 3.81 has no grouped targets for the two binaries)
-$(OUT)/.mtdutils.stamp: scripts/mtdutils-build.sh $(STAMP)/builder.stamp
+$(OUT)/.mtdutils.stamp: scripts/mtdutils-build.sh $(STAMP)/builder.stamp $(STAMP)/mtdutils-$(MTDUTILS_VERSION).version
 	$(DOCKER_RUN) env MTDUTILS_VERSION=$(MTDUTILS_VERSION) bash scripts/mtdutils-build.sh
 	@touch $@
 
@@ -123,7 +141,7 @@ tools: $(TOOL_BINS) ## Build the static diagnostic tools ($(TOOLS))
 # -----------------------------------------------------------------------------
 # RootFS
 # -----------------------------------------------------------------------------
-rootfs: $(OUT)/busybox $(OUT)/dropbearmulti $(OUT)/flash_erase $(TOOL_BINS) ## Assemble rootfs tree in new_rootfs/
+rootfs: $(OUT)/busybox $(OUT)/dropbearmulti $(OUT)/lighttpd $(OUT)/flash_erase $(TOOL_BINS) ## Assemble rootfs tree in new_rootfs/
 	BASEDIR="$(CURDIR)" OUTDIR="$(CURDIR)/$(OUT)" NEWROOT="$(CURDIR)/new_rootfs" \
 		bash scripts/mkrootfs.sh
 
@@ -167,13 +185,15 @@ flash-rootfs: ## Flash new_rootfs.squashfs to mtd5 over SSH, then reboot
 	@test -f new_rootfs.squashfs || { echo "!! new_rootfs.squashfs missing — run: make squashfs"; exit 1; }
 	@echo ">>> Flashing rootfs (mtd5) on $(DEVICE_IP) in 3s — Ctrl+C to abort"; sleep 3
 	scp -O new_rootfs.squashfs root@$(DEVICE_IP):/dev/shm/new_rootfs.squashfs
-	$(SSH) 'flash_erase /dev/mtd5 0 0 && nandwrite -p /dev/mtd5 /dev/shm/new_rootfs.squashfs && sync && reboot'
+	scp -O $(OUT)/flash_erase $(OUT)/nandwrite root@$(DEVICE_IP):/dev/shm/
+	$(SSH) 'cd /dev/shm && chmod +x flash_erase nandwrite && ./flash_erase /dev/mtd5 0 0 && ./nandwrite -p /dev/mtd5 new_rootfs.squashfs && sync && reboot'
 
 flash-kernel: ## Flash build_output/vmlinux to mtd4 over SSH, then reboot (CFE recovers if it fails)
 	@test -f $(OUT)/vmlinux || { echo "!! $(OUT)/vmlinux missing — run: make kernel"; exit 1; }
 	@echo ">>> Flashing KERNEL (mtd4) on $(DEVICE_IP) in 5s — Ctrl+C to abort"; sleep 5
 	scp -O $(OUT)/vmlinux root@$(DEVICE_IP):/dev/shm/vmlinux
-	$(SSH) 'flash_erase /dev/mtd4 0 0 && nandwrite -p /dev/mtd4 /dev/shm/vmlinux && sync && reboot'
+	scp -O $(OUT)/flash_erase $(OUT)/nandwrite root@$(DEVICE_IP):/dev/shm/
+	$(SSH) 'cd /dev/shm && chmod +x flash_erase nandwrite && ./flash_erase /dev/mtd4 0 0 && ./nandwrite -p /dev/mtd4 vmlinux && sync && reboot'
 
 connect: ## Open the UART console (picocom, logs to logs/)
 	tools/airties.sh connect

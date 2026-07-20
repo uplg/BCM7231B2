@@ -4,6 +4,10 @@ build_output/
 # Makefile stamps + downloaded source tarball cache
 build/
 
+# SSH material baked into the rootfs (personal, not for the repo)
+device/authorized_keys
+device/dropbear/
+
 # Assembled rootfs tree and squashfs image
 new_rootfs/
 new_rootfs.squashfs
