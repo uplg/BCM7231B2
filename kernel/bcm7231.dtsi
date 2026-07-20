@@ -102,37 +102,31 @@
 						     "avd_0", "jtag_0";
 		};
 
-		upg_irq0_intc: interrupt-controller@406600 {
+		/*
+		 * UPG IRQ0 block.  On BCM7231 this lives at 0x406780
+		 * (7425-style UPG layout), NOT 0x406600 (7362 layout) as a
+		 * previous revision assumed — verified in the vendor 3.3.8
+		 * kernel binary (arch_init_irq writes IRQ0_IRQEN=0x70000 at
+		 * 0x10406780, and touches no other UPG IRQ register) and
+		 * live on hardware 2026-07-20 with uart_irq_probe.
+		 *
+		 * int-fwd-mask 0x70000 = bits 16/17/18 = uarta/b/c_irqen:
+		 * these gate each UART's INTR toward its dedicated L1 line
+		 * (64/65/66).  The driver sets them in IRQ0_IRQEN at probe
+		 * and leaves them — this is the "gate" whose absence froze
+		 * every previous IRQ-mode attempt (the mask was being
+		 * written to the wrong address, 0x406600).
+		 *
+		 * int-map-mask / parent lines carried from the 7362/7425
+		 * family; inert here (no L2 bit is ever enabled — IRQEN
+		 * only ever holds the fwd mask, so the cascades never fire
+		 * and no driver consumes upg_irq0_intc interrupts).
+		 */
+		upg_irq0_intc: interrupt-controller@406780 {
 			compatible = "brcm,bcm7120-l2-intc";
-			reg = <0x406600 0x8>;
+			reg = <0x406780 0x8>;
 
-			/*
-			 * int-map-mask: one entry per parent IRQ.
-			 *   Parent 56 (upg_main): 0x4f = bits 0,1,2,3,6
-			 *     bit 0 = UPG Timer
-			 *     bit 1 = UART0 (serial@406900)
-			 *     bit 2 = UART1 (serial@406940)
-			 *     bit 3 = UART2 (serial@406980)
-			 *     bit 6 = IRB/misc
-			 *   Parent 54 (upg_bsc): 0x7000000 = bits 24,25,26
-			 *     BSC/I2C channels
-			 *
-			 * Previous value <0x44> only covered bits 2,6 — all
-			 * three UARTs and the timer were unreachable via L2,
-			 * causing all UART IRQs to be silently dropped.
-			 */
-			brcm,int-map-mask = <0x4f>, <0x7000000>;
-
-			/*
-			 * int-fwd-mask: bits forwarded directly to L1,
-			 * bypassing L2 logic.  The driver permanently masks
-			 * these in the L2 enable register.
-			 *
-			 * 0x70000 = bits 16,17,18 (typically I2C/BSC on
-			 * BCM7231 UPG).  Keep as-is — these are not UARTs
-			 * and the vendor kernel uses direct forwarding for
-			 * BSC channels on some SoCs.
-			 */
+			brcm,int-map-mask = <0x44>, <0x7000000>;
 			brcm,int-fwd-mask = <0x70000>;
 
 			interrupt-controller;
@@ -168,19 +162,19 @@
 		};
 
 		/*
-		 * UARTs at 0x10406900/940/980 (from dmesg: serial8250)
+		 * UARTs at 0x10406900/940/980, IRQ-driven on L1 64/65/66.
 		 *
-		 * Interrupts DELIBERATELY omitted — the 8250 driver then
-		 * polls on a timer, which works reliably (cost: a benign
-		 * "IRQ index 0 not found" line per port at boot).
+		 * Vendor 3.3.8 registers them as IRQ 65/66/67 (brcm_16550_ports)
+		 * and brcm_intc_enable maps vendor IRQ N to L1 bit N-1 in the
+		 * W2 mask registers => L1 hwirq 64/65/66.  The lines only
+		 * reach the L1 once IRQ0_IRQEN bits 16/17/18 are set — see
+		 * upg_irq0_intc above (int-fwd-mask).  Chain validated live
+		 * from userspace on 2026-07-20 (uart_irq_probe -gate: THRE
+		 * assertion on ttyS2 lights L1 hwirq 66 on both CPUs).
 		 *
-		 * Validated on hardware 2026-07-20: wiring the UARTs to
-		 * upg_irq0_intc bits 1/2/3 does NOT deliver interrupts —
-		 * the console freezes as soon as the 8250 switches to
-		 * IRQ-driven TX (buffer never drains, init blocks on its
-		 * first console write, SSH never starts).  The vendor L2
-		 * bit mapping for the UARTs is evidently different; do not
-		 * re-add interrupts without a UART-side IRQ trace.
+		 * Earlier freezes in IRQ mode were NOT a wrong line number:
+		 * with the upg node at the wrong base, the gate stayed shut
+		 * and the (correct) L1 64/65/66 never fired.
 		 */
 		uart0: serial@406900 {
 			compatible = "ns16550a";
@@ -188,6 +182,8 @@
 			reg-io-width = <0x4>;
 			reg-shift = <0x2>;
 			native-endian;
+			interrupt-parent = <&periph_intc>;
+			interrupts = <64>;
 			clocks = <&uart_clk>;
 			status = "disabled";
 		};
@@ -198,6 +194,8 @@
 			reg-io-width = <0x4>;
 			reg-shift = <0x2>;
 			native-endian;
+			interrupt-parent = <&periph_intc>;
+			interrupts = <65>;
 			clocks = <&uart_clk>;
 			status = "disabled";
 		};
@@ -208,6 +206,8 @@
 			reg-io-width = <0x4>;
 			reg-shift = <0x2>;
 			native-endian;
+			interrupt-parent = <&periph_intc>;
+			interrupts = <66>;
 			clocks = <&uart_clk>;
 			status = "disabled";
 		};
