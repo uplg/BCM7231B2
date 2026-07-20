@@ -33,7 +33,7 @@ err()   { echo -e "${RED}[!]${NC} $1"; exit 1; }
 # --- Clean tree ---
 rm -rf "$NEWROOT"
 info "Building rootfs tree..."
-mkdir -p "$NEWROOT"/{bin,sbin,usr/{bin,sbin,lib,share/www},lib,etc/{init.d,dropbear,params,network},dev,proc,sys,tmp,var/{run,log,tmp,lib},mnt/usb,media,root,home}
+mkdir -p "$NEWROOT"/{bin,sbin,usr/{bin,sbin,lib,share/www},lib,etc/{init.d,dropbear,params,network},dev,proc,sys,tmp,var/{run,log,tmp,lib},mnt/usb,media,root,home,config}
 
 # --- BusyBox ---
 info "Installing BusyBox..."
@@ -60,7 +60,7 @@ for a in $APPLETS; do ln -sf busybox "$a" 2>/dev/null || true; done
 cd "$NEWROOT/sbin"
 for a in init halt getty ifconfig ifdown ifup ip klogd modprobe mount \
     pivot_root poweroff reboot route start-stop-daemon swapoff swapon \
-    switch_root sysctl syslogd udhcpc umount; do
+    switch_root sysctl syslogd udhcpc umount watchdog; do
     ln -sf ../bin/busybox "$a" 2>/dev/null || true
 done
 
@@ -249,7 +249,6 @@ if [ -x /etc/init.d/rcServices ] && [ ! -f /var/run/rcServices.started ]; then
 fi
 
 echo ""
-echo "  AirTies"
 echo "  AirTies AIR 7310T"
 echo "  $(uname -r) on $(hostname)"
 echo ""
@@ -286,6 +285,27 @@ mount -t tmpfs -o size=10M tmpfs /tmp
 mount -t tmpfs -o size=2M tmpfs /var
 mkdir -p /var/run /var/log /var/tmp /var/lib
 
+# Persistent storage: JFFS2 on mtd2 (ConfigFS, 6 MB), then overlay /etc
+# and /root so changes (resolv.conf, dropbear keys, shell history) survive
+# reboots and reflashes.  First boot: mtd2 still holds the vendor ConfigFS
+# (backed up in backup/mtd2_backup.bin) — erase with cleanmarkers, remount.
+mkdir -p /config
+if ! mount -t jffs2 /dev/mtdblock2 /config 2>/dev/null; then
+    echo "[init] /config: formatting mtd2 (first boot)..."
+    flash_erase -j -q /dev/mtd2 0 0 2>/dev/null
+    mount -t jffs2 /dev/mtdblock2 /config 2>/dev/null \
+        || echo "[init] WARNING: /config unavailable, running volatile"
+fi
+if grep -q ' /config ' /proc/mounts; then
+    for d in etc root; do
+        mkdir -p "/config/overlay/$d" "/config/overlay/.$d-work"
+        mount -t overlay \
+            -o "lowerdir=/$d,upperdir=/config/overlay/$d,workdir=/config/overlay/.$d-work" \
+            overlay "/$d" \
+            || echo "[init] WARNING: overlay /$d failed"
+    done
+fi
+
 hostname AirTies
 ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
 
@@ -303,19 +323,33 @@ fi
 syslogd -C256
 klogd
 
+# Hardware watchdog (bcm7038-wdt): 60 s timeout, petted every 10 s.
+# A hard hang (kernel or PID-storm) stops the petting -> hardware reset
+# -> CFE STARTUP chain boots the kernel (or recovery if it's corrupt).
+if [ -c /dev/watchdog ]; then
+    watchdog -T 60 -t 10 /dev/watchdog
+    echo "[init] Watchdog armed (60s timeout)"
+fi
+
 USB_MOUNT=
 if [ -e /dev/sda1 ]; then
     mkdir -p /mnt/usb
     mount /dev/sda1 /mnt/usb 2>/dev/null && USB_MOUNT=/mnt/usb
 fi
 
-# Host keys: baked into /etc/dropbear at image build; volatile fallback only.
+# Host keys: baked at image build, else generated into /etc/dropbear —
+# persistent when the /config overlay is up, volatile fallback otherwise.
 DBKEYDIR="/etc/dropbear"
-mkdir -p /var/run
+mkdir -p /var/run "$DBKEYDIR" 2>/dev/null
 if [ ! -f "$DBKEYDIR/dropbear_rsa_host_key" ]; then
-    DBKEYDIR="/var/lib/dropbear"
-    mkdir -p "$DBKEYDIR"
-    echo "[init] No baked host keys — generating volatile ones..."
+    if touch "$DBKEYDIR/.rw-test" 2>/dev/null; then
+        rm -f "$DBKEYDIR/.rw-test"
+        echo "[init] Generating persistent host keys..."
+    else
+        DBKEYDIR="/var/lib/dropbear"
+        mkdir -p "$DBKEYDIR"
+        echo "[init] No baked host keys — generating volatile ones..."
+    fi
     /usr/sbin/dropbearkey -t rsa -f "$DBKEYDIR/dropbear_rsa_host_key" >/dev/null 2>&1
     /usr/sbin/dropbearkey -t ed25519 -f "$DBKEYDIR/dropbear_ed25519_host_key" >/dev/null 2>&1
 fi
