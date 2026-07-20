@@ -167,16 +167,20 @@
 			status = "disabled";
 		};
 
-			/*
+		/*
 		 * UARTs at 0x10406900/940/980 (from dmesg: serial8250)
 		 *
-		 * Interrupts omitted — the 8250 driver falls back to
-		 * timer-based polling for both TX and RX.
+		 * Interrupts DELIBERATELY omitted — the 8250 driver then
+		 * polls on a timer, which works reliably (cost: a benign
+		 * "IRQ index 0 not found" line per port at boot).
 		 *
-		 * The upg_irq0_intc int-map-mask now covers the UART
-		 * bits (0x4f includes bits 1,2,3) so L2 routing is
-		 * correct, but we keep UARTs in polling mode until
-		 * IRQ delivery is validated on hardware.
+		 * Validated on hardware 2026-07-20: wiring the UARTs to
+		 * upg_irq0_intc bits 1/2/3 does NOT deliver interrupts —
+		 * the console freezes as soon as the 8250 switches to
+		 * IRQ-driven TX (buffer never drains, init blocks on its
+		 * first console write, SSH never starts).  The vendor L2
+		 * bit mapping for the UARTs is evidently different; do not
+		 * re-add interrupts without a UART-side IRQ trace.
 		 */
 		uart0: serial@406900 {
 			compatible = "ns16550a";

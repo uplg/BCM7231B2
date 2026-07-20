@@ -8,6 +8,11 @@ build/
 device/authorized_keys
 device/dropbear/
 
+# CFE environment dump — contains device HDCP keys and serial number
+defaultenv.txt
+
+.ruff_cache/
+
 # Assembled rootfs tree and squashfs image
 new_rootfs/
 new_rootfs.squashfs
