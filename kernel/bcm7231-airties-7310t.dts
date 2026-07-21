@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 /dts-v1/;
 
+/* Top 1 MB of RAM bank0, reserved for the XPT TS-capture DMA ring
+ * (programmed from userspace by src/xpt_cap.c via /dev/mem). */
+/memreserve/ 0x0ff00000 0x00100000;
+
 #include "bcm7231.dtsi"
 
 / {
@@ -121,5 +125,17 @@
 };
 
 &kir {
+	status = "okay";
+};
+
+&bsc_a {
+	status = "okay";
+};
+
+&bsc_b {
+	status = "okay";
+};
+
+&bsc_c {
 	status = "okay";
 };

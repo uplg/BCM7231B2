@@ -137,6 +137,37 @@
 			interrupt-names = "upg_main", "upg_bsc";
 		};
 
+		/*
+		 * BSC I2C masters.  Bases mapped live on hardware (2026-07-20,
+		 * memprobe): three 0x58-byte register blocks at 0x406200/
+		 * 0x406280/0x406300 (0x80 spacing), exact brcmstb bsc_regs
+		 * layout; the rest of each 0x80 window bus-errors.  No
+		 * interrupts on purpose — the upg_bsc L1 line is unverified,
+		 * and i2c-brcmstb polls when no IRQ is given.
+		 * The DVB frontends (2x MaxLinear MxL101SF, per the stock
+		 * wydvb stack) hang off one of these buses.
+		 */
+		bsc_a: i2c@406200 {
+			compatible = "brcm,brcmstb-i2c";
+			reg = <0x406200 0x58>;
+			clock-frequency = <100000>;
+			status = "disabled";
+		};
+
+		bsc_b: i2c@406280 {
+			compatible = "brcm,brcmstb-i2c";
+			reg = <0x406280 0x58>;
+			clock-frequency = <100000>;
+			status = "disabled";
+		};
+
+		bsc_c: i2c@406300 {
+			compatible = "brcm,brcmstb-i2c";
+			reg = <0x406300 0x58>;
+			clock-frequency = <100000>;
+			status = "disabled";
+		};
+
 		sun_top_ctrl: syscon@404000 {
 			compatible = "brcm,bcm7231-sun-top-ctrl", "syscon";
 			reg = <0x404000 0x51c>;

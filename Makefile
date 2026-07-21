@@ -47,7 +47,7 @@ DOCKER_RUN = docker run --rm --platform linux/amd64 \
 DOCKER_RUN_KERNEL = $(subst -w /work,-v $(KBUILD_VOLUME):/kbuild -e KERNEL_VERSION=$(KERNEL_VERSION) -e GENET_DEBUG=$(GENET_DEBUG) -w /work,$(DOCKER_RUN))
 
 # Small static diagnostic tools, one .c each in src/
-TOOLS     := ephy_init ephy_diag genet_dump irq_dump init_raw init_test mount kir_probe
+TOOLS     := ephy_init ephy_diag genet_dump irq_dump init_raw init_test mount kir_probe memprobe mxl_probe xpt_cap
 TOOL_BINS := $(addprefix $(OUT)/,$(TOOLS))
 
 .PHONY: help all builder kernel busybox dropbear mtdutils tools rootfs squashfs \
@@ -126,6 +126,7 @@ mtdutils: $(OUT)/flash_erase $(OUT)/nandwrite ## Build static flash_erase + nand
 # --- Small diagnostic tools (src/<name>.c -> build_output/<name>) ---
 TOOL_CFLAGS = -static -O2
 $(OUT)/genet_dump: TOOL_CFLAGS = -static -O2 -Wall -Wextra
+$(OUT)/xpt_cap:    TOOL_CFLAGS = -static -O2 -Wall -Wextra
 $(OUT)/mount:      TOOL_CFLAGS = -static -Os -D_GNU_SOURCE
 $(OUT)/init_test:  TOOL_CFLAGS = -static -Os -mips32
 $(OUT)/init_raw:   TOOL_CFLAGS = -static -nostdlib -nostartfiles -mips32 -Os \
