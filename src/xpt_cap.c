@@ -54,6 +54,9 @@
 #include <getopt.h>
 #include <time.h>
 #include <sys/mman.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #define PAGE      0x1000u
 #define PAGEMASK  (~(PAGE - 1))
@@ -171,13 +174,37 @@ static const struct xc_client xc_clients[] = {
 #define RAVE_CLR3_LO            0x10a27200u
 #define RAVE_CLR3_HI            0x10a2b1fcu
 #define RAVE_CTX_BASE(n)        (0x10a2b200u + 0x100u * (n))
-#define RAVE_CTX_CDB_WRITE      0x00u
-#define RAVE_CTX_CDB_READ       0x04u
-#define RAVE_CTX_CDB_BASE       0x08u
-#define RAVE_CTX_CDB_END        0x0cu
-#define RAVE_CTX_MISC_CONFIG1   0x68u        /* bit20 = CONTEXT_ENABLE */
-#define RAVE_CTX_ENABLE_BIT     (1u << 20)
+#define RAVE_CTX_CDB_WRITE      0x00u        /* CDB write ptr  (24-bit offset) */
+#define RAVE_CTX_CDB_READ       0x04u        /* CDB read ptr                   */
+#define RAVE_CTX_CDB_BASE       0x08u        /* CDB ring base                  */
+#define RAVE_CTX_CDB_END        0x0cu        /* CDB ring end (base+size-1)     */
+#define RAVE_CTX_CDB_VALID      0x10u        /* CDB valid ptr (hw-produced)    */
+#define RAVE_CTX_WATERMARK      0x18u        /* (wm<<16)|wm, data-ready level   */
+#define RAVE_CTX_CFG_3C         0x3cu
+#define RAVE_CTX_MISC_CONFIG1   0x68u        /* AV_MISC_CONFIG1; bit20=ENABLE   */
+#define RAVE_CTX_CFG_70         0x70u
+#define RAVE_CTX_PIDQ_ENABLE    0xa4u        /* bit24 = PID/queue active        */
+#define RAVE_CTX_REC_A8         0xa8u        /* SetRecordConfig: mode=1 raw TS  */
+#define RAVE_CTX_REC_AC         0xacu
+#define RAVE_CTX_REC_B0         0xb0u        /* (old & ~0x3d) | 0x38            */
+#define RAVE_CTX_REC_B4         0xb4u
+#define RAVE_CTX_ENABLE_BIT     (1u << 20)   /* CONTEXT_ENABLE (the final arm) */
+#define RAVE_CTX_PIDQ_BIT       (1u << 24)   /* ctx+0xa4 PID/queue enable      */
 #define RAVE_QUEUE_TBL(q)       (0x10a29100u + 0x40u * (q))
+#define RAVE_QUEUE_HEAD         0x00u        /* ring read index  (mod 8)       */
+#define RAVE_QUEUE_TAIL         0x04u        /* ring write index (mod 8)       */
+#define RAVE_QUEUE_PRIMARY      0x08u        /* primary pid channel            */
+#define RAVE_QUEUE_SLOT(i)      (0x0cu + 4u * (i))  /* pushed pid channels     */
+/* Queue-allocation register, per input band: ((band+0x40)<<5 + 0x289c97)<<2.
+ * band 0 -> phys 0x10a2925c, stride 0x80 (from BXPT_Rave_PushPidChannel). */
+#define RAVE_QALLOC(band)       ((((((band) + 0x40u) << 5) + 0x289c97u) << 2) \
+                                 + 0x10000000u)
+/* AV_MISC_CONFIG1 record value (pre-arm): OUTPUT_FORMAT=0 + INPUT_ES=0 =
+ * passthrough TS, PES_SYNC=3, SHIFT bit29.  Keep-mask preserves reserved. */
+#define RAVE_MISC_KEEP          0x539f0000u
+#define RAVE_MISC_TS_PASSTHRU   0x2c000000u
+/* SPID destination bit for RAVE = bit 5 of the top byte (dest 5). */
+#define SPID_DEST_RAVE          0x20000000u
 
 /* CDB-size modeword values, keyed by size in KB (vendor switch table). */
 static uint32_t rave_modeword(uint32_t size_kb)
@@ -254,6 +281,14 @@ static void wreg(uint32_t phys, uint32_t v)
     mmio_sync();
 }
 
+/* Write WITHOUT reading back — for write-only registers whose read faults
+ * the GISB bus (some RAVE CDB pointer regs: END/DEPTH read-fault). */
+static void wr_only(const char *name, uint32_t phys, uint32_t v)
+{
+    wreg(phys, v);
+    fprintf(stderr, "  %-18s [%08x] <= %08x  (write-only)\n", name, phys, v);
+}
+
 /* Write + read back + log to stderr (RP/VP may legitimately differ). */
 static uint32_t wrv(const char *name, uint32_t phys, uint32_t v)
 {
@@ -295,6 +330,10 @@ struct cfg {
     int parallel, clkpol, syncpol, datapol, forcevalid, syncasvalid;
     int have_phys, have_size;
     int no_rsbuf, no_xc;               /* skip RS / XC init (experiments) */
+    uint32_t ctx, queue;               /* RAVE context / queue number     */
+    int rave_wm, no_parser;            /* RAVE watermark / skip front end */
+    int pbmode;                        /* PID channel in playback-band mode */
+    const char *udp;                   /* --udp host:port (rave_drain)    */
 };
 
 static int size_code(uint32_t size)
@@ -341,6 +380,13 @@ static void usage(void)
 "           in reserved RAM; run AFTER xptreset, THEN setup --no-rsbuf\n"
 "           --no-xc)\n"
 "  capture [-b buf] [-a phys] [-s size]          (TS -> stdout)\n"
+"  rave    [-p band] [-c chan] [-a phys] [-s size] [--ctx n] [--queue n]\n"
+"          [--pid <pid>] [--no-parser] [--wm] [-i ib] [polarity opts]\n"
+"          (open+arm a RAVE record context; phys MUST be in low 16 MB —\n"
+"           the CDB pointer is a 24-bit device offset with no high window)\n"
+"  rave_drain [-a phys] [--ctx n] [--udp host:port]\n"
+"          (RAVE CDB ring -> stdout, or 1316-byte UDP/TS datagrams for\n"
+"           VLC udp://@:port)\n"
 "  raveinit <ucode.bin> [-s cdbsize]\n"
 "          (global RAVE bring-up: clear tables, load 16K microcode into\n"
 "           code RAM @0xa30800, release engine, CDB-size modeword; run\n"
@@ -368,6 +414,12 @@ static void parse_opts(int argc, char **argv, struct cfg *c)
         { "pid",         1, 0, 8 },
         { "no-rsbuf",    0, 0, 9 },
         { "no-xc",       0, 0, 10 },
+        { "ctx",         1, 0, 11 },
+        { "queue",       1, 0, 12 },
+        { "wm",          0, 0, 13 },
+        { "no-parser",   0, 0, 14 },
+        { "pbmode",      0, 0, 15 },
+        { "udp",         1, 0, 16 },
         { 0, 0, 0, 0 }
     };
     int opt;
@@ -379,6 +431,8 @@ static void parse_opts(int argc, char **argv, struct cfg *c)
     c->forcevalid = c->syncasvalid = 0;
     c->have_phys = c->have_size = 0;
     c->no_rsbuf = c->no_xc = 0;
+    c->ctx = 0; c->queue = 0; c->rave_wm = 0; c->no_parser = 0;
+    c->pbmode = 0; c->udp = NULL;
 
     while ((opt = getopt_long(argc, argv, "i:p:c:b:a:s:", lo, NULL)) != -1) {
         switch (opt) {
@@ -399,12 +453,19 @@ static void parse_opts(int argc, char **argv, struct cfg *c)
                   c->have_pid = 1; break;
         case 9:   c->no_rsbuf = 1; break;
         case 10:  c->no_xc = 1;    break;
+        case 11:  c->ctx   = strtoul(optarg, NULL, 0); break;
+        case 12:  c->queue = strtoul(optarg, NULL, 0); break;
+        case 13:  c->rave_wm = 1;   break;
+        case 14:  c->no_parser = 1; break;
+        case 15:  c->pbmode = 1;    break;
+        case 16:  c->udp = optarg;  break;
         default:  usage();
         }
     }
-    if (c->ib > 6 || c->parser > 3 || c->chan > 255 || c->buf > 127) {
+    if (c->ib > 6 || c->parser > 3 || c->chan > 255 || c->buf > 127 ||
+        c->ctx > 7) {
         fprintf(stderr, "range: ib 0..6, parser 0..3, chan 0..255, "
-                        "buf 0..127\n");
+                        "buf 0..127, ctx 0..7\n");
         exit(1);
     }
     if (c->phys & 0x3ffu) {
@@ -805,6 +866,268 @@ static void do_raveinit(const struct cfg *c, const char *ucode_path)
             "live (probe with memprobe)\n", RAVE_CTX_BASE(0));
 }
 
+/* ---------------------------------- rave --------------------------------- */
+
+/* Defined in the capture section below; the drain loop reuses them. */
+static volatile sig_atomic_t g_stop;
+static void on_sig(int sig);
+static int xwrite(const uint8_t *p, size_t n);
+
+/* ------------------------------ UDP output -------------------------------
+ * --udp host:port makes rave_drain emit 1316-byte datagrams (7 x 188-byte
+ * TS packets, the MPEG-over-UDP framing VLC expects on udp://@:port)
+ * instead of writing stdout.  Partial tail is buffered across drains. */
+#define UDP_CHUNK  1316u
+static int udp_fd = -1;
+static uint8_t udp_acc[UDP_CHUNK];
+static size_t udp_len;
+
+static void udp_open(const char *hostport)
+{
+    char host[64];
+    const char *colon = strrchr(hostport, ':');
+    struct sockaddr_in sa;
+
+    if (!colon || (size_t)(colon - hostport) >= sizeof host) {
+        fprintf(stderr, "--udp wants host:port, got '%s'\n", hostport);
+        exit(1);
+    }
+    memcpy(host, hostport, (size_t)(colon - hostport));
+    host[colon - hostport] = 0;
+
+    memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons((uint16_t)strtoul(colon + 1, NULL, 10));
+    if (!inet_aton(host, &sa.sin_addr)) {
+        fprintf(stderr, "--udp: bad IPv4 address '%s'\n", host);
+        exit(1);
+    }
+    udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (udp_fd < 0) { perror("socket"); exit(1); }
+    if (connect(udp_fd, (struct sockaddr *)&sa, sizeof sa) < 0) {
+        perror("connect");
+        exit(1);
+    }
+    fprintf(stderr, "streaming UDP/TS to %s (%u-byte datagrams) — on the "
+            "receiver open udp://@:%u in VLC\n",
+            hostport, UDP_CHUNK, ntohs(sa.sin_port));
+}
+
+/* stdout or UDP, depending on --udp.  A lost datagram is dropped silently
+ * (send errors other than ENOBUFS/EAGAIN are fatal only once reported). */
+static int out_write(const uint8_t *p, size_t n)
+{
+    if (udp_fd < 0)
+        return xwrite(p, n);
+    while (n) {
+        size_t take = UDP_CHUNK - udp_len;
+        if (take > n)
+            take = n;
+        memcpy(udp_acc + udp_len, p, take);
+        udp_len += take;
+        p += take;
+        n -= take;
+        if (udp_len == UDP_CHUNK) {
+            /* ECONNREFUSED = nobody listening yet (VLC not started) — keep
+             * streaming into the void until a receiver shows up. */
+            if (send(udp_fd, udp_acc, UDP_CHUNK, 0) < 0 &&
+                errno != ENOBUFS && errno != EAGAIN && errno != EINTR &&
+                errno != ECONNREFUSED) {
+                fprintf(stderr, "udp send: %s\n", strerror(errno));
+                return -1;
+            }
+            udp_len = 0;
+        }
+    }
+    return 0;
+}
+
+/* Open ONE RAVE context, route a PID channel to it (SPID dest 5), configure
+ * a raw-TS record, bind the PID->queue->context, and arm CONTEXT_ENABLE.
+ * Run AFTER `raveinit`.  Front end (IB / parser / PID table) is programmed
+ * here too so the whole chain is one command; source the TS from the MxL
+ * (IB) or from the PB0 playback bench (set -p to the playback parser).
+ *
+ * THE addressing constraint (reversed + live-confirmed): the CDB ring
+ * pointers are a 24-bit *byte offset* into MEMC device space with NO high
+ * window register (BXPT_Rave threshold path writes BMEM_ConvertAddressToOffset
+ * raw, masked to 24 bits; live poke proves bits[31:24] read 0).  Device
+ * offset == physical address on this single-MEMC part, so the buffer MUST
+ * live in the low 16 MB of DRAM — use a low /memreserve/ (see the DTS). */
+static void do_rave(const struct cfg *c)
+{
+    uint32_t ctx = c->ctx;
+    uint32_t ctxb = RAVE_CTX_BASE(ctx);
+    uint32_t band = c->parser;             /* RAVE queue keyed by input band */
+    uint32_t chan = c->chan;               /* the pid channel we route       */
+    uint32_t cdb  = c->phys;
+    uint32_t cdbsz = c->size;
+    uint32_t cdb_off = cdb & 0xffffffu;
+    uint32_t cdb_end = (cdb + cdbsz - 1u) & 0xffffffu;
+    uint32_t qreg = RAVE_QALLOC(band);
+    uint32_t queue = c->queue;
+    uint32_t qblk = RAVE_QUEUE_TBL(queue);
+    uint32_t wm, old, v, i;
+
+    if (cdb + cdbsz > 0x01000000u) {
+        fprintf(stderr, "rave: CDB [0x%08x..0x%08x) is outside the low 16 MB "
+                "the 24-bit CDB pointer can reach — use a low -a phys\n",
+                cdb, cdb + cdbsz);
+        exit(1);
+    }
+
+    fprintf(stderr, "rave: ctx=%u band=%u chan=%u queue=%u CDB=0x%08x size=%u "
+            "(off=0x%06x end=0x%06x)\n", ctx, band, chan, queue, cdb, cdbsz,
+            cdb_off, cdb_end);
+
+    /* 1. CDB ring pointers (empty ring: WRITE=READ=BASE, END=base+size-1). */
+    wrv("CDB_BASE",  ctxb + RAVE_CTX_CDB_BASE,  cdb_off);
+    wrv("CDB_READ",  ctxb + RAVE_CTX_CDB_READ,  cdb_off);
+    wrv("CDB_WRITE", ctxb + RAVE_CTX_CDB_WRITE, cdb_off);
+    wr_only("CDB_END", ctxb + RAVE_CTX_CDB_END, cdb_end);   /* read-faults */
+
+    /* 2. SetRecordConfig — raw all-pass TS (concrete values, ctx-relative). */
+    /* Full writes (not RMW): after raveinit the context config SRAM is
+     * uninitialised garbage, so preserving "old" bits would keep garbage.
+     * The vendor ResetContext zeroes it first, making its RMW == full write. */
+    wrv("REC_A8", ctxb + RAVE_CTX_REC_A8, 0x1);
+    wrv("REC_AC", ctxb + RAVE_CTX_REC_AC, 0x0);
+    wrv("REC_B0", ctxb + RAVE_CTX_REC_B0, 0x38u);
+    wm = c->rave_wm ? ((cdbsz >> 8) / 2u) : 0u;   /* 0 = frequent data-ready */
+    wrv("WATERMARK", ctxb + RAVE_CTX_WATERMARK, (wm << 16) | wm);
+    wrv("CFG_3C", ctxb + RAVE_CTX_CFG_3C, 0x0);
+    wrv("CFG_70", ctxb + RAVE_CTX_CFG_70, 0x8d);
+    wrv("REC_B4", ctxb + RAVE_CTX_REC_B4, 0x0);
+    wrv("MISC_CONFIG1", ctxb + RAVE_CTX_MISC_CONFIG1,
+        RAVE_MISC_TS_PASSTHRU);   /* pre-arm; full defined value */
+    wr_only("CDB_END", ctxb + RAVE_CTX_CDB_END, cdb_end);  /* recompute */
+
+    /* 3. Bind PID channel -> queue -> context (BXPT_Rave_PushPidChannel). */
+    wrv("Q_ALLOC", qreg, 0x7c0u + queue * 0x10u);
+    /* ClearQueue: drop the PID/queue-active bit, then zero the queue block. */
+    old = rreg(ctxb + RAVE_CTX_PIDQ_ENABLE);
+    wrv("PIDQ dis", ctxb + RAVE_CTX_PIDQ_ENABLE, old & ~RAVE_CTX_PIDQ_BIT);
+    for (i = 0; i < 0x40u; i += 4)
+        wreg(qblk + i, 0);
+    fprintf(stderr, "  queue block 0x%08x zeroed\n", qblk);
+    wrv("Q_PRIMARY", qblk + RAVE_QUEUE_PRIMARY, chan);    /* primary channel */
+    wrv("Q_SLOT0",   qblk + RAVE_QUEUE_SLOT(0), chan);    /* first pushed    */
+    wrv("Q_TAIL",    qblk + RAVE_QUEUE_TAIL, 1);          /* depth 1         */
+    old = rreg(ctxb + RAVE_CTX_PIDQ_ENABLE);
+    wrv("PIDQ en", ctxb + RAVE_CTX_PIDQ_ENABLE, old | RAVE_CTX_PIDQ_BIT);
+
+    /* 4. SPID destination = RAVE (dest 5 = bit5 of top byte). */
+    old = rreg(XPT_SPID(chan));
+    wrv("SPID dest5", XPT_SPID(chan), (old & 0x00ffffffu) | SPID_DEST_RAVE);
+
+    /* 5. PID channel table: band + enable.  All-pass by default; --pid for a
+     * PID-matching channel (e.g. 0x1fff nulls from an unlocked/idle MxL). */
+    old = rreg(XPT_PID_TABLE(chan));
+    if (c->have_pid)
+        v = (old & PID_KEEP_MASK_PIDMATCH & ~PID_ENABLE) |
+            (band << 16) | c->pid;
+    else
+        v = (old & PID_KEEP_MASK & ~PID_ENABLE) | (band << 16);
+    if (c->pbmode)
+        v |= 0x8000u;                  /* playback-band mode (GetPbBandId) */
+    wrv("PID_TABLE cfg", XPT_PID_TABLE(chan), v);
+    wrv("PID_TABLE en",  XPT_PID_TABLE(chan), v | PID_ENABLE);
+
+    /* 6. Parser: MPEG 188, input band select, accept nulls, ignore CC, EN;
+     * all-pass unless --pid.  Skip if --no-parser (PB0 owns its parser). */
+    if (!c->no_parser) {
+        old = rreg(XPT_FE_PARSER_CTRL1(c->parser));
+        v = (old & ~PARSER_WR_FIELDS) | (188u << 12) | (c->ib << 8) |
+            PARSER_ACCEPT_NULL | PARSER_CC_IGNORE | PARSER_ENABLE;
+        if (!c->have_pid)
+            v |= PARSER_ALL_PASS;
+        wrv("PARSER_CTRL1", XPT_FE_PARSER_CTRL1(c->parser), v);
+
+        /* 7. Input band: pktlen 188, sync detect on, serial + polarities. */
+        old = rreg(XPT_FE_IB_CTRL(c->ib));
+        v = (old & ~IB_WR_FIELDS) | (0xbcu << 16) | IB_SYNC_DETECT_EN;
+        if (c->parallel)    v |= IB_PARALLEL_SEL;
+        if (c->clkpol)      v |= IB_CLOCK_POL;
+        if (c->syncpol)     v |= IB_SYNC_POL;
+        if (c->datapol)     v |= IB_DATA_POL;
+        if (c->forcevalid)  v |= IB_FORCE_VALID;
+        if (c->syncasvalid) v |= IB_USE_SYNC_AS_VALID;
+        wrv("IB_CTRL", XPT_FE_IB_CTRL(c->ib), v);
+    } else {
+        fprintf(stderr, "  parser/IB skipped (--no-parser; PB0 feeds it)\n");
+    }
+
+    /* 8. ARM: CONTEXT_ENABLE = bit20 of AV_MISC_CONFIG1 (the last step). */
+    old = rreg(ctxb + RAVE_CTX_MISC_CONFIG1);
+    wrv("ARM CONTEXT_ENABLE", ctxb + RAVE_CTX_MISC_CONFIG1,
+        old | RAVE_CTX_ENABLE_BIT);
+
+    fprintf(stderr, "rave armed — watch CDB_WRITE (0x%08x) advance past "
+            "0x%06x, then `rave_drain`\n", ctxb + RAVE_CTX_CDB_WRITE, cdb_off);
+}
+
+/* Drain the RAVE CDB ring to stdout: VALID/WRITE ptr - READ ptr = bytes
+ * available (raw byte subtract, no shift — proven), copy [READ..WRITE),
+ * advance READ (wrap END->BASE).  Pointers are 24-bit device offsets; the
+ * buffer offset = ptr - (BASE & 0xffffff). */
+static void do_rave_drain(const struct cfg *c)
+{
+    uint32_t ctx = c->ctx;
+    uint32_t ctxb = RAVE_CTX_BASE(ctx);
+    uint32_t base = rreg(ctxb + RAVE_CTX_CDB_BASE) & 0xffffffu;  /* readable */
+    uint32_t size = c->size;                 /* END read-faults; use -s */
+    uint32_t phys = c->phys;
+
+    if (size == 0 || size > 0x01000000u) {
+        fprintf(stderr, "rave_drain: bad CDB size %u — pass -s\n", size);
+        exit(1);
+    }
+    fprintf(stderr, "rave_drain: ctx=%u CDB phys=0x%08x base=0x%06x size=%u — "
+            "TS on %s, Ctrl+C to stop\n", ctx, phys, base, size,
+            c->udp ? c->udp : "stdout");
+    if (c->udp)
+        udp_open(c->udp);
+
+    void *m = mmap(NULL, size, PROT_READ, MAP_SHARED, fd, phys);
+    if (m == MAP_FAILED) { perror("mmap CDB"); exit(1); }
+    const uint8_t *ring = m;
+
+    signal(SIGINT, on_sig);
+    signal(SIGTERM, on_sig);
+    signal(SIGPIPE, SIG_IGN);
+
+    uint64_t total = 0;
+    time_t last = time(NULL);
+    uint32_t rd = rreg(ctxb + RAVE_CTX_CDB_READ) & 0xffffffu;
+
+    while (!g_stop) {
+        uint32_t wr = rreg(ctxb + RAVE_CTX_CDB_VALID) & 0xffffffu;
+        /* VALID stays 0 (below BASE) until the hardware produces its first
+         * bytes — comparing it against READ then would "drain" garbage. */
+        if (wr >= base && wr != rd) {
+            uint32_t ro = rd - base, wo = wr - base;
+            if (wo > ro) {
+                if (out_write(ring + ro, wo - ro)) break;
+            } else {
+                if (out_write(ring + ro, size - ro) || out_write(ring, wo))
+                    break;
+            }
+            total += (wo - ro) & (size - 1u);
+            rd = wr;
+            wreg(ctxb + RAVE_CTX_CDB_READ, rd);
+        }
+        time_t now = time(NULL);
+        if (now - last >= 5) {
+            fprintf(stderr, "  drained %llu bytes (WRITE=0x%06x READ=0x%06x)\n",
+                    (unsigned long long)total, wr, rd);
+            last = now;
+        }
+        usleep(5000);
+    }
+    fprintf(stderr, "rave_drain stopped: %llu bytes total\n",
+            (unsigned long long)total);
+}
+
 /* --------------------------------- setup --------------------------------- */
 
 static void do_setup(const struct cfg *c)
@@ -1121,6 +1444,10 @@ int main(int argc, char **argv)
         do_setup(&c);
     else if (!strcmp(cmd, "capture"))
         do_capture(&c);
+    else if (!strcmp(cmd, "rave"))
+        do_rave(&c);
+    else if (!strcmp(cmd, "rave_drain"))
+        do_rave_drain(&c);
     else if (!strcmp(cmd, "stop"))
         do_stop(&c);
     else

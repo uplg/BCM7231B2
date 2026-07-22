@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 /dts-v1/;
 
-/* Top 1 MB of RAM bank0, reserved for the XPT TS-capture DMA ring
- * (programmed from userspace by src/xpt_cap.c via /dev/mem). */
+/* Top 1 MB of RAM bank0, reserved for the XPT MSG DMA ring and the PB0
+ * playback source buffers (programmed from userspace by src/xpt_cap.c). */
 /memreserve/ 0x0ff00000 0x00100000;
+
+/* 2 MB at 12 MB, reserved for the XPT_RAVE CDB record ring.  The RAVE CDB
+ * pointer is a 24-bit MEMC device offset with no high-address window, so the
+ * ring MUST sit in the low 16 MB of DRAM (kernel lives in 0..~6 MB; this is
+ * clear of it).  See do_rave() in src/xpt_cap.c. */
+/memreserve/ 0x00c00000 0x00200000;
 
 #include "bcm7231.dtsi"
 

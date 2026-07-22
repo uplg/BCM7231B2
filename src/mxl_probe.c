@@ -136,9 +136,10 @@ static const struct reg_ctrl mxl_spur_8mhz[] = {
 int main(int argc, char **argv)
 {
     int bus = 1, secs = 8, clkout = 0, scan = 0, tson = 0, opt;
+    int ts_par = 0, ts_clkinv = 0, ts_syncinv = 0, ts_validinv = 0, recover = 0;
     uint32_t freq = 586000000, bw = 8;
 
-    while ((opt = getopt(argc, argv, "a:b:f:w:t:msT")) != -1) {
+    while ((opt = getopt(argc, argv, "a:b:f:w:t:msTPIYVK")) != -1) {
         switch (opt) {
         case 'a': addr = strtoul(optarg, NULL, 0); break;
         case 'b': bus  = atoi(optarg); break;
@@ -147,10 +148,16 @@ int main(int argc, char **argv)
         case 't': secs = atoi(optarg); break;
         case 'm': clkout = 1; break;
         case 's': scan = 1; break;
-        case 'T': tson = 1; break;
+        case 'T': tson = 1; break;                 /* enable TS output      */
+        case 'P': ts_par = 1; break;               /* parallel (else serial)*/
+        case 'I': ts_clkinv = 1; break;            /* invert output clock   */
+        case 'Y': ts_syncinv = 1; break;           /* invert MPEG sync      */
+        case 'V': ts_validinv = 1; break;          /* invert MPEG valid     */
+        case 'K': recover = 1; break;              /* blind reset (unwedge) */
         default:
             fprintf(stderr, "usage: %s [-a addr] [-b bus] [-f freq-hz] "
-                            "[-w bw-mhz] [-t poll-secs]\n", argv[0]);
+                            "[-w bw-mhz] [-t poll-secs] [-T [-P] [-I] [-Y] "
+                            "[-V]]\n", argv[0]);
             return 1;
         }
     }
@@ -163,6 +170,24 @@ int main(int argc, char **argv)
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("MxL101SF @ %s addr 0x%02x — tune %u Hz, BW %u MHz\n",
            dev, addr, freq, bw);
+
+    /* -K: blind recovery for a chip wedged by a bad pin-mux write.  The i2c
+     * WRITE path still reaches the slave (its SDA/SCL are shared and fine);
+     * only the register-READ path is confused.  So blind-write, no readback:
+     * select page 0, disable the pin mux (reg 0x1B=0), soft-reset the PHY.
+     * Then verify the chip ID came back. */
+    if (recover) {
+        wr(0xff, 0x00);              /* page 0                             */
+        wr(0x1b, 0x00);              /* pin mux OFF (undo the 0x1E wedge)  */
+        wr(0x02, 0x01);              /* MxL_PhySoftReset                    */
+        usleep(100000);
+        uint8_t cid = 0;
+        if (rd(0xfc, &cid) == 0 && cid == 0x61)
+            printf("recovery OK — CHIP_ID=0x%02x back alive\n", cid);
+        else
+            printf("recovery FAILED — chip still mute (power-cycle needed)\n");
+        return 0;
+    }
 
     /* --- identify --- */
     uint8_t id = 0, rev = 0, v = 0;
@@ -212,12 +237,39 @@ int main(int argc, char **argv)
     printf("programmed: mode=0x%02x filt_bw=%u f64=0x%04x\n",
            mode, filt_bw, f64);
 
-    if (tson) {   /* stock MxL_MpegTsON: reg 0x17 bits[7:6] = 11 (01 = off) */
-        const struct reg_ctrl c[] = { {0x17, 0xc0, 0xc0}, {0, 0, 0} };
+    if (tson) {
+        /* MPEG-output config, from the mainline mxl111sf V6 driver
+         * (mxl111sf_config_mpeg_in) MINUS the pin-mux enable: on this board
+         * reg 0x1B=0x1E (V6_ENABLE_PIN_MUX) WEDGES the master chip's control
+         * interface (the TS pins are hardwired to the SoC, not muxed), so we
+         * must NOT touch it.  reg 0x18 = data mode (bit0 parallel / bit1
+         * serial) + sync-pol bit2 + valid-pol bit3; reg 0x17 bit5 = clock
+         * phase; reg 0x19 bit7 = MSB-first (serial).  We also keep the
+         * vendor's stock reg 0x17 bits[7:6]=11 on top. */
+        struct reg_ctrl c[8];
+        int n = 0;
+        uint8_t r17, r18, r19, r1b;
+
+        c[n++] = (struct reg_ctrl){0x17, 0x20, ts_clkinv ? 0x20 : 0x00};
+        c[n++] = (struct reg_ctrl){0x17, 0xc0, 0xc0};        /* vendor TS-on*/
+        if (ts_par)
+            c[n++] = (struct reg_ctrl){0x18, 0x03, 0x01};    /* parallel    */
+        else {
+            c[n++] = (struct reg_ctrl){0x18, 0x03, 0x02};    /* serial      */
+            c[n++] = (struct reg_ctrl){0x19, 0x80, 0x80};    /* MSB first   */
+        }
+        c[n++] = (struct reg_ctrl){0x18, 0x04, ts_syncinv  ? 0x04 : 0x00};
+        c[n++] = (struct reg_ctrl){0x18, 0x08, ts_validinv ? 0x08 : 0x00};
+        c[n]   = (struct reg_ctrl){0, 0, 0};
         if (program(c)) return 1;
-        uint8_t r17 = 0;
-        rd(0x17, &r17);
-        printf("MPEG TS output ON (reg 0x17 = 0x%02x)\n", r17);
+
+        rd(0x17, &r17); rd(0x18, &r18); rd(0x19, &r19); rd(0x1b, &r1b);
+        printf("MPEG TS output ON (%s%s%s%s): "
+               "clkinv[17]=0x%02x ctrl[18]=0x%02x order[19]=0x%02x "
+               "pinmux[1b]=0x%02x\n",
+               ts_par ? "parallel" : "serial",
+               ts_clkinv ? " clk-inv" : "", ts_syncinv ? " sync-inv" : "",
+               ts_validinv ? " valid-inv" : "", r17, r18, r19, r1b);
     }
 
     /* --- scan mode: sweep UHF channels 21..48, report energy + locks --- */
