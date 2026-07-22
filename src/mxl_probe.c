@@ -137,9 +137,13 @@ int main(int argc, char **argv)
 {
     int bus = 1, secs = 8, clkout = 0, scan = 0, tson = 0, opt;
     int ts_par = 0, ts_clkinv = 0, ts_syncinv = 0, ts_validinv = 0, recover = 0;
+    int ts_clksel = -1;
+    /* -R reg=val raw post-init writes (experiments), up to 8 */
+    uint8_t raw_reg[8], raw_val[8];
+    int nraw = 0;
     uint32_t freq = 586000000, bw = 8;
 
-    while ((opt = getopt(argc, argv, "a:b:f:w:t:msTPIYVK")) != -1) {
+    while ((opt = getopt(argc, argv, "a:b:f:w:t:msTPIYVKC:R:")) != -1) {
         switch (opt) {
         case 'a': addr = strtoul(optarg, NULL, 0); break;
         case 'b': bus  = atoi(optarg); break;
@@ -154,6 +158,16 @@ int main(int argc, char **argv)
         case 'Y': ts_syncinv = 1; break;           /* invert MPEG sync      */
         case 'V': ts_validinv = 1; break;          /* invert MPEG valid     */
         case 'K': recover = 1; break;              /* blind reset (unwedge) */
+        case 'C': ts_clksel = atoi(optarg) & 7; break; /* TS clock freq sel */
+        case 'R':                                  /* raw write reg=val   */
+            if (nraw < 8) {
+                char *eq = strchr(optarg, '=');
+                if (!eq) { fprintf(stderr, "-R wants reg=val\n"); return 1; }
+                raw_reg[nraw] = (uint8_t)strtoul(optarg, NULL, 0);
+                raw_val[nraw] = (uint8_t)strtoul(eq + 1, NULL, 0);
+                nraw++;
+            }
+            break;
         default:
             fprintf(stderr, "usage: %s [-a addr] [-b bus] [-f freq-hz] "
                             "[-w bw-mhz] [-t poll-secs] [-T [-P] [-I] [-Y] "
@@ -252,6 +266,13 @@ int main(int argc, char **argv)
 
         c[n++] = (struct reg_ctrl){0x17, 0x20, ts_clkinv ? 0x20 : 0x00};
         c[n++] = (struct reg_ctrl){0x17, 0xc0, 0xc0};        /* vendor TS-on*/
+        /* reg 0x17 bits[4:2] = MPEG TS clock frequency selector 0..7
+         * (vendor DevConfigMpegOut disasm: reg17 = 0xC0|clkinv<<5|sel<<2).
+         * Chip default 4 caps the serial line rate at ~9 Mbps — a full
+         * ~25 Mbps DVB-T mux needs a faster clock (lower sel). */
+        if (ts_clksel >= 0)
+            c[n++] = (struct reg_ctrl){0x17, 0x1c,
+                                       (uint8_t)(ts_clksel << 2)};
         if (ts_par)
             c[n++] = (struct reg_ctrl){0x18, 0x03, 0x01};    /* parallel    */
         else {
@@ -270,6 +291,15 @@ int main(int argc, char **argv)
                ts_par ? "parallel" : "serial",
                ts_clkinv ? " clk-inv" : "", ts_syncinv ? " sync-inv" : "",
                ts_validinv ? " valid-inv" : "", r17, r18, r19, r1b);
+    }
+
+    /* --- raw experimental writes, applied last --- */
+    for (int k = 0; k < nraw; k++) {
+        uint8_t rb = 0;
+        wr(raw_reg[k], raw_val[k]);
+        rd(raw_reg[k], &rb);
+        printf("raw: reg 0x%02x <= 0x%02x  rb=0x%02x\n",
+               raw_reg[k], raw_val[k], rb);
     }
 
     /* --- scan mode: sweep UHF channels 21..48, report energy + locks --- */
