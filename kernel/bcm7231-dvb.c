@@ -226,7 +226,15 @@ struct air_adapter {
 	u16 chan_pid[AIR_CHANS_PER_ADAP];
 	u8  chan_ref[AIR_CHANS_PER_ADAP];
 	int nfeeds;                     /* active feeds (ring armed if >0) */
+	unsigned int migrations;        /* consecutive failed-buffer hops  */
+	bool broken;                    /* gave up until next fresh feed   */
 };
+
+/* Consecutive wedge-migrations before an adapter gives up (disarms) until
+ * the next first-feed re-arm.  A migration loop on a sick engine otherwise
+ * hammers shared XPT state forever and degrades the OTHER adapter's
+ * stream. */
+#define AIR_MAX_MIGRATIONS 3
 
 static struct air_adapter *air_adapters[AIR_NUM_ADAPTERS];
 
@@ -658,8 +666,12 @@ static int air_start_feed(struct dvb_demux_feed *feed)
 	}
 	a->chan_pid[free] = feed->pid;
 	a->chan_ref[free] = 1;
-	if (a->nfeeds++ == 0 && !(xpt_rd(XPT_MSG_BUF_CTRL1(a->buf)) & 1))
-		air_ring_reprogram(a);  /* first-ever feed: arm the ring   */
+	if (a->nfeeds++ == 0) {
+		a->broken = false;      /* fresh session: try again        */
+		a->migrations = 0;
+		if (!(xpt_rd(XPT_MSG_BUF_CTRL1(a->buf)) & 1))
+			air_ring_reprogram(a);  /* arm the ring            */
+	}
 	air_chan_program(a, free, feed->pid);
 	mutex_unlock(&a->lock);
 	pr_debug(DRVNAME ": adapter%d: start pid 0x%04x -> chan %d\n",
@@ -759,7 +771,7 @@ static int air_drain_thread(void *data)
 		u32 n = a->buf;
 
 		if (!(xpt_rd(XPT_MSG_BUF_CTRL1(n)) & 1)) {
-			usleep_range(10000, 20000);     /* ring disarmed   */
+			msleep_interruptible(20);       /* ring disarmed   */
 			continue;
 		}
 		u32 vp_raw = xpt_rd(XPT_MSG_DMA_VP(n));
@@ -770,14 +782,21 @@ static int air_drain_thread(void *data)
 		if (vp_raw != last_vp) {
 			last_vp = vp_raw;
 			last_change = jiffies;
-		} else if (a->nfeeds > 0 &&
+		} else if (a->nfeeds > 0 && !a->broken &&
 			   time_after(jiffies, last_change + 3 * HZ)) {
 			/* Feeds active yet VP frozen 3 s: assume a wedged
 			 * buffer context and hop.  (SYNC_COUNT can't gate
 			 * this — it's an acquisition counter that latches,
-			 * not a flow meter.)  A hop with no TS flowing is
-			 * wasted but harmless; the 15 s cadence keeps an
-			 * unlocked tuner from burning through the pool. */
+			 * not a flow meter.)  Give up after a few hops: an
+			 * endless migration loop hammers shared XPT state
+			 * and degrades the other adapter's stream. */
+			if (++a->migrations > AIR_MAX_MIGRATIONS) {
+				pr_warn(DRVNAME ": adapter%d: %u failed migrations — disarming until next feed\n",
+					a->idx, a->migrations - 1);
+				xpt_wr(XPT_MSG_BUF_CTRL1(a->buf), 0);
+				a->broken = true;
+				continue;
+			}
 			air_ring_migrate(a);
 			last_vp = 0xffffffff;
 			last_change = jiffies + 12 * HZ;
@@ -792,7 +811,7 @@ static int air_drain_thread(void *data)
 				air_ring_reprogram(a);
 				stuck = 0;
 			}
-			usleep_range(2000, 4000);
+			msleep_interruptible(3);
 			continue;
 		}
 		stuck = 0;
@@ -827,9 +846,10 @@ static int air_drain_thread(void *data)
 			}
 			rp = (rp + sync + usable) & (size - 1);
 			xpt_wr(XPT_MSG_DMA_RP(n), rp);
+			a->migrations = 0;      /* engine alive: reset budget */
 			continue;
 		}
-		usleep_range(2000, 4000);
+		msleep_interruptible(3);
 	}
 	return 0;
 }
