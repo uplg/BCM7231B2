@@ -232,6 +232,14 @@ static struct air_adapter *air_adapters[AIR_NUM_ADAPTERS];
 
 /* --------------------------- MxL i2c helpers ----------------------------- */
 
+/* Force register page 0.  The chip's page register (0x00) is GLOBAL state:
+ * anything that dies between a page-2 switch and its restore (a killed
+ * monitoring tool, a crashed reader) leaves EVERY later access aimed at the
+ * wrong page — tunes write into the void and status reads return zeros
+ * ("NO LOCK" with a perfect signal).  Every driver entry point that touches
+ * page-0 registers goes through this first. */
+static int mxl_page0(struct air_adapter *a);
+
 static int mxl_wr(struct air_adapter *a, u8 reg, u8 val)
 {
 	u8 buf[2] = { reg, val };
@@ -251,6 +259,11 @@ static int mxl_rd(struct air_adapter *a, u8 reg, u8 *val)
 	};
 
 	return i2c_transfer(a->i2c, msgs, 2) == 2 ? 0 : -EIO;
+}
+
+static int mxl_page0(struct air_adapter *a)
+{
+	return mxl_wr(a, 0x00, 0x00);
 }
 
 static int mxl_program(struct air_adapter *a, const struct mxl_reg *t)
@@ -284,6 +297,9 @@ static int mxl_chip_init(struct air_adapter *a)
 	u8 id = 0;
 	int ret;
 
+	ret = mxl_page0(a);
+	if (ret)
+		return ret;
 	ret = mxl_rd(a, 0xfc, &id);
 	if (ret || id != 0x61) {
 		pr_err(DRVNAME ": adapter %d: MxL101SF not found at 0x%02x (id 0x%02x)\n",
@@ -350,6 +366,9 @@ static int mxl_fe_set_frontend(struct dvb_frontend *fe)
 	u8 filt_bw = (bw == 6) ? 21 : (bw == 7) ? 42 : 63;
 	int ret;
 
+	ret = mxl_page0(a);
+	if (ret)
+		return ret;
 	ret = mxl_wr(a, 0x1c, 0x00);            /* stop tune               */
 	if (ret)
 		return ret;
@@ -372,6 +391,8 @@ static int mxl_fe_read_status(struct dvb_frontend *fe, enum fe_status *status)
 	struct air_adapter *a = fe->demodulator_priv;
 	u8 r28 = 0, r2a = 0, r24 = 0;
 
+	if (mxl_page0(a))
+		return -EIO;
 	if (mxl_rd(a, 0x28, &r28) || mxl_rd(a, 0x2a, &r2a) ||
 	    mxl_rd(a, 0x24, &r24))
 		return -EIO;
@@ -393,6 +414,8 @@ static int mxl_fe_read_snr(struct dvb_frontend *fe, u16 *snr)
 	struct air_adapter *a = fe->demodulator_priv;
 	u8 lo = 0, hi = 0;
 
+	if (mxl_page0(a))
+		return -EIO;
 	if (mxl_rd(a, 0x27, &lo) || mxl_rd(a, 0x28, &hi))
 		return -EIO;
 	*snr = lo | ((hi & 0x03) << 8);         /* 0.1 dB units            */
@@ -639,9 +662,9 @@ static int air_start_feed(struct dvb_demux_feed *feed)
 		air_ring_reprogram(a);  /* first-ever feed: arm the ring   */
 	air_chan_program(a, free, feed->pid);
 	mutex_unlock(&a->lock);
-	pr_info(DRVNAME ": adapter%d: start pid 0x%04x -> chan %d (type %d ts_type %x)\n",
-		a->idx, feed->pid, AIR_CHAN_BASE + a->idx * AIR_CHANS_PER_ADAP + free,
-		feed->type, feed->ts_type);
+	pr_debug(DRVNAME ": adapter%d: start pid 0x%04x -> chan %d\n",
+		 a->idx, feed->pid,
+		 AIR_CHAN_BASE + a->idx * AIR_CHANS_PER_ADAP + free);
 	return 0;
 }
 
@@ -660,7 +683,7 @@ static int air_stop_feed(struct dvb_demux_feed *feed)
 				 * context beyond recovery (only a buffer
 				 * migration or a power cycle clears it) */
 				a->nfeeds--;
-				pr_info(DRVNAME ": adapter%d: stop pid 0x%04x (chan %d)\n",
+				pr_debug(DRVNAME ": adapter%d: stop pid 0x%04x (chan %d)\n",
 					a->idx, feed->pid,
 					AIR_CHAN_BASE + a->idx * AIR_CHANS_PER_ADAP + slot);
 			}
@@ -728,19 +751,13 @@ static int air_drain_thread(void *data)
 {
 	struct air_adapter *a = data;
 	u32 size = a->ring_size;
-	u64 total = 0;
 	unsigned int stuck = 0;
 	u32 last_vp = 0xffffffff;
 	unsigned long last_change = jiffies;
-	unsigned long last_log = jiffies;
 
 	while (!kthread_should_stop()) {
 		u32 n = a->buf;
-		if (time_after(jiffies, last_log + 10 * HZ)) {
-			pr_info(DRVNAME ": adapter%d: %llu TS bytes drained (VP=%08x)\n",
-				a->idx, total, xpt_rd(XPT_MSG_DMA_VP(n)));
-			last_log = jiffies;
-		}
+
 		if (!(xpt_rd(XPT_MSG_BUF_CTRL1(n)) & 1)) {
 			usleep_range(10000, 20000);     /* ring disarmed   */
 			continue;
@@ -805,7 +822,6 @@ static int air_drain_thread(void *data)
 				dvb_dmx_swfilter_packets(&a->demux,
 							 a->bounce + sync,
 							 usable / 188);
-				total += usable;
 			} else {
 				usable = count - sync;  /* junk: discard   */
 			}
