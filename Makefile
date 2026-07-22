@@ -47,7 +47,7 @@ DOCKER_RUN = docker run --rm --platform linux/amd64 \
 DOCKER_RUN_KERNEL = $(subst -w /work,-v $(KBUILD_VOLUME):/kbuild -e KERNEL_VERSION=$(KERNEL_VERSION) -e GENET_DEBUG=$(GENET_DEBUG) -w /work,$(DOCKER_RUN))
 
 # Small static diagnostic tools, one .c each in src/
-TOOLS     := ephy_init ephy_diag genet_dump irq_dump init_raw init_test mount kir_probe memprobe mxl_probe xpt_cap
+TOOLS     := ephy_init ephy_diag genet_dump irq_dump init_raw init_test mount kir_probe memprobe mxl_probe xpt_cap dvbzap
 TOOL_BINS := $(addprefix $(OUT)/,$(TOOLS))
 
 .PHONY: help all builder kernel busybox dropbear mtdutils tools rootfs squashfs \

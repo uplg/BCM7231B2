@@ -1398,6 +1398,27 @@ static void do_addpid(const struct cfg *c)
     wrv("PID_TABLE en", XPT_PID_TABLE(c->chan), v | PID_ENABLE);
 }
 
+/* --------------------------------- addbuf -------------------------------- */
+
+/* Program ONE extra MSG ring buffer (steps 1..3 of setup, nothing else):
+ * lets several services run on separate buffers — the MSG engine's
+ * throughput collapses as the number of channels feeding one buffer grows
+ * (34 chans -> ~3 Mbps total), so "all services in parallel" = one buffer
+ * per service, drained together. */
+static void do_addbuf(const struct cfg *c)
+{
+    uint32_t code = (uint32_t)size_code(c->size);
+
+    fprintf(stderr, "addbuf: buf=%u ring=0x%08x size=%u (code %u) mode=%u\n",
+            c->buf, c->phys, c->size, code, c->bufmode);
+    wreg(XPT_MSG_BUF_RESET, c->buf);
+    wrv("DMA_BP", XPT_MSG_DMA_BP(c->buf), (c->phys >> 10) | (code << 28));
+    wreg(XPT_MSG_BUF_RESET, c->buf);
+    wrv("GEN_FILT_EN", XPT_MSG_GEN_FILT_EN(c->buf), 0);
+    wrv("BUF_CTRL2", XPT_MSG_BUF_CTRL2(c->buf), 0);
+    wrv("BUF_CTRL1", XPT_MSG_BUF_CTRL1(c->buf), c->bufmode);
+}
+
 /* --------------------------------- stop ---------------------------------- */
 
 static void do_stop(const struct cfg *c)
@@ -1484,20 +1505,35 @@ static void do_capture(const struct cfg *c)
     uint64_t total = 0;
     time_t last = time(NULL);
 
-    /* Start at the CURRENT valid pointer: RP is stale SRAM (BUF_RESET does
-     * not clear it) and the ring may hold pre-setup garbage — syncing
-     * RP = VP skips it so output begins on a fresh packet boundary. */
-    {
-        uint32_t vp0 = rreg(XPT_MSG_DMA_VP(c->buf)) & (size - 1);
-        wreg(XPT_MSG_DMA_RP(c->buf), vp0);
-        fprintf(stderr, "  RP synced to VP=0x%05x (stale ring skipped)\n",
-                vp0);
-    }
+    /* Start from a CLEAN ring: BUF_RESET zeroes RP/VP and, crucially,
+     * clears the engine's overflow-pause state.  If the ring filled up
+     * before we started draining (easy: 512K fills in <1 s while addpid
+     * runs), VP latches bit31 = overflow flag and the engine pauses; a
+     * masked RP=VP sync then reads as "still full" and the engine never
+     * resumes — the ring is deadlocked at 0 bytes forever.  Reset is the
+     * only exit, so do it at start and again whenever bit31 shows up. */
+    uint32_t ctrl1 = rreg(XPT_MSG_BUF_CTRL1(c->buf));
+    wreg(XPT_MSG_BUF_CTRL1(c->buf), 0);        /* disable while resetting  */
+    wreg(XPT_MSG_BUF_RESET, c->buf);
+    wreg(XPT_MSG_BUF_CTRL1(c->buf), ctrl1);    /* re-arm                   */
+    fprintf(stderr, "  ring reset (CTRL1=%08x RP=%08x VP=%08x)\n", ctrl1,
+            rreg(XPT_MSG_DMA_RP(c->buf)), rreg(XPT_MSG_DMA_VP(c->buf)));
+    uint32_t overflows = 0;
 
     while (!g_stop) {
-        uint32_t vp = rreg(XPT_MSG_DMA_VP(c->buf)) & (size - 1);
+        uint32_t vp_raw = rreg(XPT_MSG_DMA_VP(c->buf));
+        uint32_t vp = vp_raw & (size - 1);
         uint32_t rp = rreg(XPT_MSG_DMA_RP(c->buf)) & (size - 1);
 
+        if (vp_raw & 0x80000000u) {     /* overflow: drain stalled behind */
+            wreg(XPT_MSG_BUF_CTRL1(c->buf), 0);
+            wreg(XPT_MSG_BUF_RESET, c->buf);
+            wreg(XPT_MSG_BUF_CTRL1(c->buf), ctrl1);
+            overflows++;
+            fprintf(stderr, "  OVERFLOW #%u — ring reset (data lost)\n",
+                    overflows);
+            continue;
+        }
         if (vp != rp) {
             if (vp > rp) {
                 if (out_write(ring + rp, vp - rp))
@@ -1641,6 +1677,8 @@ int main(int argc, char **argv)
         do_setup(&c);
     else if (!strcmp(cmd, "addpid"))
         do_addpid(&c);
+    else if (!strcmp(cmd, "addbuf"))
+        do_addbuf(&c);
     else if (!strcmp(cmd, "capture"))
         do_capture(&c);
     else if (!strcmp(cmd, "rave"))

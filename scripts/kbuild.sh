@@ -96,6 +96,28 @@ fi
 grep -q 'KEYBOARD_BCM7231_KIR' drivers/input/keyboard/Kconfig || \
     { echo "!! keyboard/Kconfig patch failed"; exit 1; }
 
+# --- Driver: AIR 7310T DVB adapter (XPT + 2x MxL101SF) — built-in ---
+# Frontend + hw-PID-filter demux, reversed from libwydvb.so / nexus.ko.
+echo "[*] Installing BCM7231 DVB driver..."
+cp /work/kernel/bcm7231-dvb.c drivers/misc/
+grep -q 'bcm7231-dvb' drivers/misc/Makefile || \
+    echo 'obj-$(CONFIG_DVB_BCM7231) += bcm7231-dvb.o' \
+        >> drivers/misc/Makefile
+
+if ! grep -q 'DVB_BCM7231' drivers/misc/Kconfig; then
+    sed -i '/^endmenu/i \
+config DVB_BCM7231\
+\ttristate "AirTies AIR 7310T DVB (BCM7231 XPT + MxL101SF)"\
+\tdepends on DVB_CORE && I2C\
+\thelp\
+\t  DVB-T adapter driver for the AirTies AIR 7310T: two MxL101SF\
+\t  frontends feeding the BCM7231 XPT transport processor.\
+\t  Register programming reversed from the stock firmware.\
+' drivers/misc/Kconfig
+fi
+grep -q 'DVB_BCM7231' drivers/misc/Kconfig || \
+    { echo "!! misc/Kconfig patch failed"; exit 1; }
+
 # --- Patch: BCM7231 internal EPHY (PHY ID 0x600d8690, 40nm like 7346/7362) ---
 if ! grep -q 'PHY_ID_BCM7231' include/linux/brcmphy.h; then
     echo "[*] Patching brcmphy.h (PHY_ID_BCM7231)..."
