@@ -4,6 +4,11 @@
  * Tiny HTTP daemon over the standard Linux-DVB API (bcm7231-dvb driver):
  *
  *   GET /status                     adapters' lock/SNR/freq as JSON
+ *   GET /channels                   the box's channel grid (names, freqs,
+ *                                   pids — the mux-survey JSON, served
+ *                                   verbatim from CHANNELS_PATH so Iris
+ *                                   discovers everything; re-survey =
+ *                                   update one file here)
  *   GET /tune?a=0&f=506000000&pids=0x64,0x78,0x82[&w=8]
  *                                   tune adapter a, hw-filter the pids,
  *                                   stream raw MPEG-TS (chunked-less,
@@ -37,6 +42,9 @@
 #define MAX_ADAPTERS 2
 #define MAX_PIDS     32
 #define LOCK_WAIT_MS 6000
+/* Channel grid (JSON) served by /channels — lives in the persistent
+ * /config overlay so it survives reboots and reflashes. */
+#define CHANNELS_PATH "/config/tnt_channels.json"
 
 static pid_t stream_child[MAX_ADAPTERS];
 static uint32_t last_freq[MAX_ADAPTERS];
@@ -97,6 +105,28 @@ static void do_status(int c)
                      "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
                      "Connection: close\r\n\r\n%s\n", body);
     send(c, out, (size_t)n, MSG_NOSIGNAL);
+}
+
+/* ------------------------------ /channels ------------------------------- */
+
+static void do_channels(int c)
+{
+    char hdr[128];
+    static char body[65536];
+    int f = open(CHANNELS_PATH, O_RDONLY);
+    ssize_t n = f >= 0 ? read(f, body, sizeof body) : -1;
+
+    if (f >= 0)
+        close(f);
+    if (n <= 0) {
+        http_error(c, 404, "no channel grid (missing " CHANNELS_PATH ")");
+        return;
+    }
+    int h = snprintf(hdr, sizeof hdr,
+                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                     "Content-Length: %zd\r\nConnection: close\r\n\r\n", n);
+    send(c, hdr, (size_t)h, MSG_NOSIGNAL);
+    send(c, body, (size_t)n, MSG_NOSIGNAL);
 }
 
 /* -------------------------------- /tune --------------------------------- */
@@ -283,18 +313,33 @@ int main(int argc, char **argv)
 
     for (;;) {
         int c = accept(s, NULL, NULL);
-        char req[1024];
-        ssize_t r;
+        char req[2048];
+        size_t got = 0;
 
         if (c < 0)
             continue;
         setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-        r = recv(c, req, sizeof req - 1, 0);
-        if (r <= 0) {
+        /* Read until the header terminator: clients like ffmpeg send the
+         * request line and headers in SEPARATE packets — a single recv()
+         * truncates the path and turns every stream open into a 404. */
+        {
+            struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+            setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        }
+        while (got < sizeof req - 1) {
+            ssize_t r = recv(c, req + got, sizeof req - 1 - got, 0);
+            if (r <= 0)
+                break;
+            got += (size_t)r;
+            req[got] = 0;
+            if (strstr(req, "\r\n\r\n"))
+                break;
+        }
+        if (got == 0) {
             close(c);
             continue;
         }
-        req[r] = 0;
+        req[got] = 0;
 
         char *sp = strchr(req, ' ');
         char *path = sp ? sp + 1 : NULL;
@@ -304,10 +349,12 @@ int main(int argc, char **argv)
 
         if (path && !strncmp(path, "/status", 7))
             do_status(c);
+        else if (path && !strncmp(path, "/channels", 9))
+            do_channels(c);
         else if (path && !strncmp(path, "/tune?", 6))
             do_tune(c, path + 5);
         else if (path)
-            http_error(c, 404, "try /status or /tune");
+            http_error(c, 404, "try /status, /channels or /tune");
         close(c);        /* parent copy; the child owns its own dup */
     }
 }
