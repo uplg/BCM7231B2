@@ -3,23 +3,33 @@
  *
  * Tiny HTTP daemon over the standard Linux-DVB API (bcm7231-dvb driver):
  *
- *   GET /status                     adapters' lock/SNR/freq as JSON
+ *   GET /status                     adapters' lock/SNR/freq/clients as JSON
  *   GET /channels                   the box's channel grid (names, freqs,
  *                                   pids — the mux-survey JSON, served
  *                                   verbatim from CHANNELS_PATH so Iris
  *                                   discovers everything; re-survey =
  *                                   update one file here)
  *   GET /tune?a=0&f=506000000&pids=0x64,0x78,0x82[&w=8]
- *                                   tune adapter a, hw-filter the pids,
- *                                   stream raw MPEG-TS (chunked-less,
- *                                   Connection: close) until the client
- *                                   hangs up
+ *                                   stream raw MPEG-TS of that mux subset
+ *                                   until the client hangs up
  *
- * One streaming client per adapter; a new /tune on a busy adapter evicts
- * the previous client (Iris is the only consumer and manages itself).
- * Streaming runs in a fork()ed child so the parent stays responsive for
- * /status and the second adapter.  No TLS, no auth: this binds inside the
- * home LAN / tailnet only — transport security is the tunnel's job.
+ * v2 — SHARED tuners, MANY clients (the "deux personnes sur M6 + une sur
+ * RMC" requirement):
+ *   - The parent owns every frontend/demux/dvr fd and runs one poll()
+ *     loop; no fork-per-client. A tuned adapter stays tuned (and its DVR
+ *     drained) even with zero clients — zap-backs are instant.
+ *   - N clients per adapter share ONE dvr stream (fan-out). PID filters
+ *     are the UNION of what clients asked; consumers pick their service
+ *     by PID (Iris maps ffmpeg by PID).
+ *   - Adapter allocation ignores the `a` hint when it can do better:
+ *     an adapter already tuned to the requested frequency is JOINED,
+ *     otherwise a client-less adapter is (re)tuned, and only as a last
+ *     resort are the clients of the least-loaded adapter evicted.
+ *   - A slow client never stalls the mux: sends are non-blocking and a
+ *     lagging socket just drops chunks (its decoder conceals).
+ *
+ * No TLS, no auth: this binds inside the home LAN / tailnet only —
+ * transport security is the tunnel's job.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,12 +37,12 @@
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <unistd.h>
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
-#include <sys/wait.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
@@ -41,23 +51,33 @@
 
 #define MAX_ADAPTERS 2
 #define MAX_PIDS     32
+#define MAX_CLIENTS  8      /* per adapter */
 #define LOCK_WAIT_MS 6000
+#define DVR_RING     (16 * 1024 * 1024)
 /* Channel grid (JSON) served by /channels — lives in the persistent
  * /config overlay so it survives reboots and reflashes. */
 #define CHANNELS_PATH "/config/tnt_channels.json"
 
-static pid_t stream_child[MAX_ADAPTERS];
-static uint32_t last_freq[MAX_ADAPTERS];
+struct adapter {
+    uint32_t freq;                 /* 0 = never tuned */
+    int fe;                        /* held open to keep the tune; -1 idle */
+    int dvr;                       /* -1 until first tune */
+    int filters[MAX_PIDS];
+    uint16_t fpids[MAX_PIDS];
+    int nfilters;
+    int clients[MAX_CLIENTS];
+    int nclients;
+    unsigned long drops;           /* chunks dropped on slow clients */
+    unsigned long overflows;       /* kernel DVR ring overflows */
+};
 
-static void reap(int sig)
+static struct adapter adapters[MAX_ADAPTERS];
+
+static long now_ms(void)
 {
-    (void)sig;
-    pid_t p;
-    while ((p = waitpid(-1, NULL, WNOHANG)) > 0) {
-        for (int i = 0; i < MAX_ADAPTERS; i++)
-            if (stream_child[i] == p)
-                stream_child[i] = 0;
-    }
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1000 + t.tv_nsec / 1000000;
 }
 
 static int http_error(int c, int code, const char *msg)
@@ -74,7 +94,7 @@ static int http_error(int c, int code, const char *msg)
 
 static void do_status(int c)
 {
-    char body[512], out[768];
+    char body[768], out[1024];
     int len = 0;
 
     len += snprintf(body + len, sizeof body - (size_t)len, "{\"adapters\":[");
@@ -82,22 +102,27 @@ static void do_status(int c)
         char path[64];
         fe_status_t st = 0;
         uint16_t snr = 0;
-        int fe;
+        struct adapter *ad = &adapters[a];
 
-        snprintf(path, sizeof path, "/dev/dvb/adapter%d/frontend0", a);
-        fe = open(path, O_RDONLY | O_NONBLOCK);
-        if (fe >= 0) {
-            ioctl(fe, FE_READ_STATUS, &st);
-            ioctl(fe, FE_READ_SNR, &snr);
-            close(fe);
+        if (ad->fe >= 0) {
+            ioctl(ad->fe, FE_READ_STATUS, &st);
+            ioctl(ad->fe, FE_READ_SNR, &snr);
+        } else {
+            int fe;
+            snprintf(path, sizeof path, "/dev/dvb/adapter%d/frontend0", a);
+            fe = open(path, O_RDONLY | O_NONBLOCK);
+            if (fe >= 0) {
+                ioctl(fe, FE_READ_STATUS, &st);
+                ioctl(fe, FE_READ_SNR, &snr);
+                close(fe);
+            }
         }
         len += snprintf(body + len, sizeof body - (size_t)len,
-                        "%s{\"adapter\":%d,\"streaming\":%s,\"freq\":%u,"
-                        "\"lock\":%s,\"snr_db\":%u.%u}",
-                        a ? "," : "", a, stream_child[a] ? "true" : "false",
-                        last_freq[a],
+                        "%s{\"adapter\":%d,\"clients\":%d,\"freq\":%u,"
+                        "\"lock\":%s,\"snr_db\":%u.%u,\"drops\":%lu}",
+                        a ? "," : "", a, ad->nclients, ad->freq,
                         (st & FE_HAS_LOCK) ? "true" : "false",
-                        snr / 10, snr % 10);
+                        snr / 10, snr % 10, ad->drops);
     }
     len += snprintf(body + len, sizeof body - (size_t)len, "]}");
 
@@ -129,7 +154,7 @@ static void do_channels(int c)
     send(c, body, (size_t)n, MSG_NOSIGNAL);
 }
 
-/* -------------------------------- /tune --------------------------------- */
+/* ------------------------------ query utils ----------------------------- */
 
 static int q_u32(const char *q, const char *key, uint32_t *out)
 {
@@ -163,12 +188,67 @@ static int q_pids(const char *q, uint16_t *pids)
     return n;
 }
 
-/* Child: owns the frontend + filters + dvr for one adapter and pumps TS
- * into the socket until the peer closes (send fails). */
-static void stream_child_run(int c, uint32_t adapter, uint32_t freq,
-                             uint32_t bw_mhz, const uint16_t *pids, int npids)
+/* ---------------------------- adapter control --------------------------- */
+
+static void adapter_close_filters(struct adapter *ad)
+{
+    for (int i = 0; i < ad->nfilters; i++)
+        close(ad->filters[i]);
+    ad->nfilters = 0;
+}
+
+static int adapter_add_filter(int a, struct adapter *ad, uint16_t pid)
 {
     char path[64];
+
+    for (int i = 0; i < ad->nfilters; i++)
+        if (ad->fpids[i] == pid)
+            return 0;
+    if (ad->nfilters >= MAX_PIDS)
+        return -1;
+
+    snprintf(path, sizeof path, "/dev/dvb/adapter%d/demux0", a);
+    int d = open(path, O_RDWR);
+    struct dmx_pes_filter_params f = {
+        .pid = pid,
+        .input = DMX_IN_FRONTEND,
+        .output = DMX_OUT_TS_TAP,
+        .pes_type = DMX_PES_OTHER,
+        .flags = DMX_IMMEDIATE_START,
+    };
+    if (d < 0 || ioctl(d, DMX_SET_PES_FILTER, &f) < 0) {
+        if (d >= 0)
+            close(d);
+        return -1;
+    }
+    ad->filters[ad->nfilters] = d;
+    ad->fpids[ad->nfilters] = pid;
+    ad->nfilters++;
+    return 0;
+}
+
+/* Tune (or join) adapter `a` to `freq`. Returns 0 on lock. Blocks the
+ * loop for up to LOCK_WAIT_MS on a real retune — the other adapter's
+ * 16 MiB DVR ring absorbs several seconds, so concurrent viewers ride
+ * it out. */
+static int adapter_tune(int a, struct adapter *ad, uint32_t freq, uint32_t bw_mhz)
+{
+    char path[64];
+    fe_status_t st = 0;
+    long t0 = now_ms();
+
+    if (ad->fe < 0) {
+        snprintf(path, sizeof path, "/dev/dvb/adapter%d/frontend0", a);
+        ad->fe = open(path, O_RDWR);
+        if (ad->fe < 0)
+            return -1;
+    }
+    if (ad->freq == freq && ioctl(ad->fe, FE_READ_STATUS, &st) == 0 &&
+        (st & FE_HAS_LOCK)) {
+        fprintf(stderr, "tunerd: a%d f=%u lock reused (no retune)\n", a, freq);
+        return 0;
+    }
+
     struct dtv_property props[] = {
         { .cmd = DTV_DELIVERY_SYSTEM, .u.data = SYS_DVBT },
         { .cmd = DTV_FREQUENCY,       .u.data = freq },
@@ -176,118 +256,157 @@ static void stream_child_run(int c, uint32_t adapter, uint32_t freq,
         { .cmd = DTV_TUNE },
     };
     struct dtv_properties cmds = { .num = 4, .props = props };
-    fe_status_t st = 0;
 
-    snprintf(path, sizeof path, "/dev/dvb/adapter%u/frontend0", adapter);
-    int fe = open(path, O_RDWR);
-    if (fe < 0)
-        _exit(1);
-    if (ioctl(fe, FE_SET_PROPERTY, &cmds) < 0)
-        _exit(1);
+    /* New frequency: the old mux's filters are meaningless now. */
+    adapter_close_filters(ad);
+    st = 0;
+    if (ioctl(ad->fe, FE_SET_PROPERTY, &cmds) < 0)
+        return -1;
     for (int i = 0; i < LOCK_WAIT_MS / 100; i++) {
         usleep(100000);
-        if (ioctl(fe, FE_READ_STATUS, &st) == 0 && (st & FE_HAS_LOCK))
+        if (ioctl(ad->fe, FE_READ_STATUS, &st) == 0 && (st & FE_HAS_LOCK))
             break;
     }
-    if (!(st & FE_HAS_LOCK)) {
-        http_error(c, 504, "no lock");
-        _exit(2);
-    }
+    if (!(st & FE_HAS_LOCK))
+        return -1;
+    ad->freq = freq;
+    fprintf(stderr, "tunerd: a%d f=%u locked in %ld ms\n", a, freq, now_ms() - t0);
 
-    snprintf(path, sizeof path, "/dev/dvb/adapter%u/demux0", adapter);
-    for (int i = 0; i < npids; i++) {
-        int d = open(path, O_RDWR);
-        struct dmx_pes_filter_params f = {
-            .pid = pids[i],
-            .input = DMX_IN_FRONTEND,
-            .output = DMX_OUT_TS_TAP,
-            .pes_type = DMX_PES_OTHER,
-            .flags = DMX_IMMEDIATE_START,
-        };
-        if (d < 0 || ioctl(d, DMX_SET_PES_FILTER, &f) < 0) {
-            http_error(c, 500, "demux");
-            _exit(3);
-        }
-        /* fds intentionally kept open until _exit */
+    if (ad->dvr < 0) {
+        snprintf(path, sizeof path, "/dev/dvb/adapter%d/dvr0", a);
+        ad->dvr = open(path, O_RDONLY | O_NONBLOCK);
+        if (ad->dvr < 0)
+            return -1;
+        /* Default DVR ring is ~190 KB (≈200 ms of a mux) — any hiccup
+         * would DROP TS silently. 16 MiB rides out retunes of the other
+         * adapter and slow moments. Best-effort. */
+        if (ioctl(ad->dvr, DMX_SET_BUFFER_SIZE,
+                  (unsigned long)DVR_RING) < 0)
+            fprintf(stderr, "tunerd: a%d DMX_SET_BUFFER_SIZE failed (%d)\n",
+                    a, errno);
     }
-
-    snprintf(path, sizeof path, "/dev/dvb/adapter%u/dvr0", adapter);
-    int dvr = open(path, O_RDONLY);
-    if (dvr < 0)
-        _exit(4);
-
-    {
-        static const char hdr[] =
-            "HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\n"
-            "Connection: close\r\n\r\n";
-        if (send(c, hdr, sizeof hdr - 1, MSG_NOSIGNAL) < 0)
-            _exit(5);
-    }
-
-    static uint8_t buf[65536];
-    for (;;) {
-        ssize_t r = read(dvr, buf, sizeof buf);
-        if (r < 0) {
-            if (errno == EINTR || errno == EOVERFLOW)
-                continue;
-            break;
-        }
-        if (r == 0) {
-            usleep(2000);
-            continue;
-        }
-        const uint8_t *p = buf;
-        while (r > 0) {
-            ssize_t w = send(c, p, (size_t)r, MSG_NOSIGNAL);
-            if (w < 0) {
-                if (errno == EINTR)
-                    continue;
-                _exit(0);       /* client gone: normal end of stream */
-            }
-            p += w;
-            r -= w;
-        }
-    }
-    _exit(0);
+    return 0;
 }
+
+static void client_drop(struct adapter *ad, int idx)
+{
+    close(ad->clients[idx]);
+    ad->clients[idx] = ad->clients[ad->nclients - 1];
+    ad->nclients--;
+}
+
+static void adapter_evict_all(struct adapter *ad)
+{
+    while (ad->nclients > 0)
+        client_drop(ad, 0);
+}
+
+/* -------------------------------- /tune --------------------------------- */
 
 static void do_tune(int c, const char *query)
 {
-    uint32_t adapter = 0, freq = 0, bw = 8;
+    uint32_t a_hint = 0, freq = 0, bw = 8;
     uint16_t pids[MAX_PIDS];
     int npids;
 
-    q_u32(query, "a", &adapter);
+    q_u32(query, "a", &a_hint);
     q_u32(query, "w", &bw);
-    if (q_u32(query, "f", &freq) || adapter >= MAX_ADAPTERS ||
-        freq < 100000000 || freq > 900000000) {
-        http_error(c, 400, "need a=<0|1> f=<hz> pids=<p,p,...>");
+    if (q_u32(query, "f", &freq) || freq < 100000000 || freq > 900000000) {
+        http_error(c, 400, "need f=<hz> pids=<p,p,...>");
+        close(c);
         return;
     }
     npids = q_pids(query, pids);
     if (npids <= 0) {
         http_error(c, 400, "need pids=");
+        close(c);
         return;
     }
 
-    if (stream_child[adapter]) {            /* evict the previous client */
-        kill(stream_child[adapter], SIGKILL);
-        waitpid(stream_child[adapter], NULL, 0);
-        stream_child[adapter] = 0;
+    /* Adapter pick: (1) already on this frequency, (2) client-less,
+     * (3) evict the least-loaded. The `a` hint only breaks ties. */
+    int pick = -1;
+    for (int a = 0; a < MAX_ADAPTERS; a++)
+        if (adapters[a].freq == freq && adapters[a].fe >= 0) {
+            pick = a;
+            break;
+        }
+    if (pick < 0)
+        for (int a = 0; a < MAX_ADAPTERS; a++)
+            if (adapters[a].nclients == 0) {
+                pick = a;
+                break;
+            }
+    if (pick < 0) {
+        pick = (int)(a_hint < MAX_ADAPTERS ? a_hint : 0);
+        for (int a = 0; a < MAX_ADAPTERS; a++)
+            if (adapters[a].nclients < adapters[pick].nclients)
+                pick = a;
+        fprintf(stderr, "tunerd: a%d evicting %d client(s) for f=%u\n",
+                pick, adapters[pick].nclients, freq);
+        adapter_evict_all(&adapters[pick]);
     }
 
-    pid_t p = fork();
-    if (p < 0) {
-        http_error(c, 500, "fork");
+    struct adapter *ad = &adapters[pick];
+    if (ad->nclients >= MAX_CLIENTS) {
+        http_error(c, 503, "adapter full");
+        close(c);
         return;
     }
-    if (p == 0)
-        stream_child_run(c, adapter, freq, bw, pids, npids);
-    stream_child[adapter] = p;
-    last_freq[adapter] = freq;
+    if (adapter_tune(pick, ad, freq, bw) < 0) {
+        http_error(c, 504, "no lock");
+        close(c);
+        return;
+    }
+    for (int i = 0; i < npids; i++)
+        adapter_add_filter(pick, ad, pids[i]);
+
+    static const char hdr[] =
+        "HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\n"
+        "Connection: close\r\n\r\n";
+    if (send(c, hdr, sizeof hdr - 1, MSG_NOSIGNAL) < 0) {
+        close(c);
+        return;
+    }
+    fcntl(c, F_SETFL, O_NONBLOCK);
+    ad->clients[ad->nclients++] = c;
+    fprintf(stderr, "tunerd: a%d f=%u client joined (%d total, %d filters)\n",
+            pick, freq, ad->nclients, ad->nfilters);
 }
 
 /* --------------------------------- main ---------------------------------- */
+
+static void pump_adapter(struct adapter *ad)
+{
+    static uint8_t buf[65536];
+
+    for (;;) {
+        ssize_t r = read(ad->dvr, buf, sizeof buf);
+        if (r < 0) {
+            if (errno == EOVERFLOW) {
+                ad->overflows++;
+                fprintf(stderr, "tunerd: DVR overflow #%lu (TS loss)\n",
+                        ad->overflows);
+                continue;
+            }
+            return; /* EAGAIN or real error: back to poll() */
+        }
+        if (r == 0)
+            return;
+        for (int i = 0; i < ad->nclients; ) {
+            ssize_t w = send(ad->clients[i], buf, (size_t)r, MSG_NOSIGNAL);
+            if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                /* Slow client: drop this chunk for them only. */
+                ad->drops++;
+                i++;
+            } else if (w < 0) {
+                client_drop(ad, i); /* gone — do not advance i */
+            } else {
+                i++; /* short writes: rare on 64 KB; remainder dropped */
+            }
+        }
+    }
+}
 
 int main(int argc, char **argv)
 {
@@ -299,62 +418,111 @@ int main(int argc, char **argv)
     };
     int one = 1;
 
-    struct sigaction sc = { .sa_handler = reap, .sa_flags = SA_RESTART };
-    sigaction(SIGCHLD, &sc, NULL);
     signal(SIGPIPE, SIG_IGN);
+    for (int a = 0; a < MAX_ADAPTERS; a++) {
+        adapters[a].fe = -1;
+        adapters[a].dvr = -1;
+    }
 
     int s = socket(AF_INET, SOCK_STREAM, 0);
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    if (bind(s, (struct sockaddr *)&sa, sizeof sa) < 0 || listen(s, 8) < 0) {
+    if (bind(s, (struct sockaddr *)&sa, sizeof sa) < 0 || listen(s, 16) < 0) {
         perror("bind/listen");
         return 1;
     }
-    fprintf(stderr, "tunerd: listening on :%d\n", port);
+    fprintf(stderr, "tunerd: v2 (shared tuners) listening on :%d\n", port);
 
     for (;;) {
-        int c = accept(s, NULL, NULL);
-        char req[2048];
-        size_t got = 0;
+        struct pollfd pfd[1 + MAX_ADAPTERS + MAX_ADAPTERS * MAX_CLIENTS];
+        int n = 0;
 
-        if (c < 0)
+        pfd[n].fd = s;
+        pfd[n].events = POLLIN;
+        n++;
+        for (int a = 0; a < MAX_ADAPTERS; a++) {
+            if (adapters[a].dvr >= 0) {
+                pfd[n].fd = adapters[a].dvr;
+                pfd[n].events = POLLIN;
+                n++;
+            }
+            /* Watch clients for hangup (they never send data). */
+            for (int i = 0; i < adapters[a].nclients; i++) {
+                pfd[n].fd = adapters[a].clients[i];
+                pfd[n].events = POLLIN;
+                n++;
+            }
+        }
+
+        if (poll(pfd, (nfds_t)n, 1000) < 0)
             continue;
-        setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-        /* Read until the header terminator: clients like ffmpeg send the
-         * request line and headers in SEPARATE packets — a single recv()
-         * truncates the path and turns every stream open into a 404. */
-        {
-            struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
-            setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-        }
-        while (got < sizeof req - 1) {
-            ssize_t r = recv(c, req + got, sizeof req - 1 - got, 0);
-            if (r <= 0)
-                break;
-            got += (size_t)r;
-            req[got] = 0;
-            if (strstr(req, "\r\n\r\n"))
-                break;
-        }
-        if (got == 0) {
-            close(c);
-            continue;
-        }
-        req[got] = 0;
 
-        char *sp = strchr(req, ' ');
-        char *path = sp ? sp + 1 : NULL;
-        char *end = path ? strchr(path, ' ') : NULL;
-        if (end)
-            *end = 0;
+        int k = 0;
+        if (pfd[k].revents & POLLIN) {
+            int c = accept(s, NULL, NULL);
+            if (c >= 0) {
+                char req[2048];
+                size_t got = 0;
 
-        if (path && !strncmp(path, "/status", 7))
-            do_status(c);
-        else if (path && !strncmp(path, "/channels", 9))
-            do_channels(c);
-        else if (path && !strncmp(path, "/tune?", 6))
-            do_tune(c, path + 5);
-        else if (path)
-            http_error(c, 404, "try /status, /channels or /tune");
-        close(c);        /* parent copy; the child owns its own dup */
+                setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+                /* Read until the header terminator: clients like ffmpeg
+                 * send request line and headers in SEPARATE packets. */
+                struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+                setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+                while (got < sizeof req - 1) {
+                    ssize_t r = recv(c, req + got, sizeof req - 1 - got, 0);
+                    if (r <= 0)
+                        break;
+                    got += (size_t)r;
+                    req[got] = 0;
+                    if (strstr(req, "\r\n\r\n"))
+                        break;
+                }
+                if (got == 0) {
+                    close(c);
+                } else {
+                    req[got] = 0;
+                    char *sp = strchr(req, ' ');
+                    char *path = sp ? sp + 1 : NULL;
+                    char *end = path ? strchr(path, ' ') : NULL;
+                    if (end)
+                        *end = 0;
+
+                    if (path && !strncmp(path, "/status", 7)) {
+                        do_status(c);
+                        close(c);
+                    } else if (path && !strncmp(path, "/channels", 9)) {
+                        do_channels(c);
+                        close(c);
+                    } else if (path && !strncmp(path, "/tune?", 6)) {
+                        do_tune(c, path + 5); /* keeps or closes c itself */
+                    } else {
+                        if (path)
+                            http_error(c, 404,
+                                       "try /status, /channels or /tune");
+                        close(c);
+                    }
+                }
+            }
+        }
+        k++;
+        for (int a = 0; a < MAX_ADAPTERS; a++) {
+            struct adapter *ad = &adapters[a];
+            if (ad->dvr >= 0) {
+                if (pfd[k].revents & POLLIN)
+                    pump_adapter(ad);
+                k++;
+            }
+            /* Hangup sweep — any readable/HUP client is done (HTTP GET
+             * clients never legitimately send more data). */
+            for (int i = 0; i < ad->nclients && k < n; k++) {
+                if (pfd[k].revents & (POLLIN | POLLHUP | POLLERR)) {
+                    client_drop(ad, i);
+                    /* client list shuffled: stop matching pfd entries to
+                     * indices this round; the next poll() rebuilds. */
+                    break;
+                }
+                i++;
+            }
+        }
     }
 }
