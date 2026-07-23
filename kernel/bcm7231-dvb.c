@@ -226,15 +226,31 @@ struct air_adapter {
 	u16 chan_pid[AIR_CHANS_PER_ADAP];
 	u8  chan_ref[AIR_CHANS_PER_ADAP];
 	int nfeeds;                     /* active feeds (ring armed if >0) */
-	unsigned int migrations;        /* consecutive failed-buffer hops  */
-	bool broken;                    /* gave up until next fresh feed   */
+	unsigned int migrations;        /* failed-buffer hops this window  */
+	unsigned long mig_window_start; /* jiffies of window's first hop   */
+	unsigned long last_mig;         /* jiffies of the latest hop       */
+	bool broken;                    /* disarmed: engine declared sick  */
+	unsigned long broken_until;     /* cooldown gate for re-arming     */
 };
 
-/* Consecutive wedge-migrations before an adapter gives up (disarms) until
- * the next first-feed re-arm.  A migration loop on a sick engine otherwise
- * hammers shared XPT state forever and degrades the OTHER adapter's
- * stream. */
+/* Wedge-migrations allowed inside AIR_MIG_WINDOW before the adapter is
+ * declared sick and disarmed for AIR_BROKEN_COOLDOWN.  A migration loop
+ * on a sick engine hammers shared XPT state, degrades the OTHER
+ * adapter's stream and (observed 2026-07-23) eventually starves the
+ * GENET TX rings until the box drops off the network entirely.
+ *
+ * The budget is WINDOWED, not consecutive: a wedged engine often drains
+ * a few bursts from each fresh buffer before wedging it too, and a
+ * fresh session (tunerd reconnect) arrives within seconds — both used
+ * to hand the loop a brand-new budget, so the old "reset on any drain /
+ * on first feed" bookkeeping never tripped the guard (a real cascade
+ * ran 20+ hops).  Now only AIR_MIG_HEALTHY of sustained draining since
+ * the last hop clears the count, and a tripped adapter stays disarmed
+ * until the cooldown has genuinely elapsed. */
 #define AIR_MAX_MIGRATIONS 3
+#define AIR_MIG_WINDOW      (60 * HZ)
+#define AIR_MIG_HEALTHY     (30 * HZ)
+#define AIR_BROKEN_COOLDOWN (300 * HZ)
 
 static struct air_adapter *air_adapters[AIR_NUM_ADAPTERS];
 
@@ -667,9 +683,15 @@ static int air_start_feed(struct dvb_demux_feed *feed)
 	a->chan_pid[free] = feed->pid;
 	a->chan_ref[free] = 1;
 	if (a->nfeeds++ == 0) {
-		a->broken = false;      /* fresh session: try again        */
-		a->migrations = 0;
-		if (!(xpt_rd(XPT_MSG_BUF_CTRL1(a->buf)) & 1))
+		/* A sick adapter re-arms only once its cooldown has served —
+		 * tunerd/Iris retry within seconds of a disarm, and letting
+		 * every fresh session wipe the verdict restarts the exact
+		 * migration cascade the guard exists to stop. */
+		if (a->broken && time_after(jiffies, a->broken_until)) {
+			a->broken = false;
+			a->migrations = 0;
+		}
+		if (!a->broken && !(xpt_rd(XPT_MSG_BUF_CTRL1(a->buf)) & 1))
 			air_ring_reprogram(a);  /* arm the ring            */
 	}
 	air_chan_program(a, free, feed->pid);
@@ -787,16 +809,26 @@ static int air_drain_thread(void *data)
 			/* Feeds active yet VP frozen 3 s: assume a wedged
 			 * buffer context and hop.  (SYNC_COUNT can't gate
 			 * this — it's an acquisition counter that latches,
-			 * not a flow meter.)  Give up after a few hops: an
-			 * endless migration loop hammers shared XPT state
-			 * and degrades the other adapter's stream. */
+			 * not a flow meter.)  Budget is windowed — see
+			 * AIR_MAX_MIGRATIONS. */
+			if (a->migrations &&
+			    time_after(jiffies,
+				       a->mig_window_start + AIR_MIG_WINDOW))
+				a->migrations = 0;  /* stale window        */
+			if (a->migrations == 0)
+				a->mig_window_start = jiffies;
 			if (++a->migrations > AIR_MAX_MIGRATIONS) {
-				pr_warn(DRVNAME ": adapter%d: %u failed migrations — disarming until next feed\n",
-					a->idx, a->migrations - 1);
+				pr_warn(DRVNAME ": adapter%d: %u migrations in <%us — engine sick, disarming for %us\n",
+					a->idx, a->migrations - 1,
+					AIR_MIG_WINDOW / HZ,
+					AIR_BROKEN_COOLDOWN / HZ);
 				xpt_wr(XPT_MSG_BUF_CTRL1(a->buf), 0);
 				a->broken = true;
+				a->broken_until =
+					jiffies + AIR_BROKEN_COOLDOWN;
 				continue;
 			}
+			a->last_mig = jiffies;
 			air_ring_migrate(a);
 			last_vp = 0xffffffff;
 			last_change = jiffies + 12 * HZ;
@@ -846,7 +878,13 @@ static int air_drain_thread(void *data)
 			}
 			rp = (rp + sync + usable) & (size - 1);
 			xpt_wr(XPT_MSG_DMA_RP(n), rp);
-			a->migrations = 0;      /* engine alive: reset budget */
+			/* Only SUSTAINED draining clears the budget — a sick
+			 * engine drips a few bursts from every fresh buffer,
+			 * and treating each drip as "alive" is what let the
+			 * cascade run unbounded. */
+			if (a->migrations &&
+			    time_after(jiffies, a->last_mig + AIR_MIG_HEALTHY))
+				a->migrations = 0;
 			continue;
 		}
 		msleep_interruptible(3);
