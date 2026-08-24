@@ -55,7 +55,11 @@
 #define KIR_CTRL_PROTO		0x10	/* Ruwido (protocol 0x17) */
 #define KIR_CTRL_IRQEN		0x20
 
-#define KIR_RELEASE_MS	150	/* stock glue uses 125; frames repeat ~120 ms */
+/* Frames repeat ~120 ms (stock glue used 125 ms). One missed frame under
+ * marginal reception must NOT look like a release: the next frame would
+ * count as a fresh press, and downstream toggles double-fire. 290 ms rides
+ * out two consecutive missed frames while keeping release latency low. */
+#define KIR_RELEASE_MS	290
 
 /* CIR parameter file for nexus protocol 0x17 (Ruwido), packed exactly as
  * BKIR_P_ConfigCir does from its .rodata struct.  Index 24 is never written. */

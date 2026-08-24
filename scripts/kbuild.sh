@@ -166,6 +166,21 @@ fi
 
 echo "[*] AirTies- markers in bcmgenet.c: $(grep -c 'AirTies-' drivers/net/ethernet/broadcom/genet/bcmgenet.c)"
 
+# --- Patch: BMIPS_GENERIC lacks SYS_SUPPORTS_ZBOOT — enable it so we can
+#     build a self-decompressing vmlinuz ELF (raw vmlinux outgrew the 7 MB
+#     mtd4 once WiFi/mac80211 landed; gzip'd it fits with huge margin) ---
+if ! grep -A2 'bool "Broadcom Generic BMIPS kernel"' arch/mips/Kconfig | grep -q SYS_SUPPORTS_ZBOOT; then
+    echo "[*] Patching arch/mips/Kconfig (BMIPS_GENERIC + SYS_SUPPORTS_ZBOOT)..."
+    sed -i 's/^\tbool "Broadcom Generic BMIPS kernel"$/&\n\tselect SYS_SUPPORTS_ZBOOT/' arch/mips/Kconfig
+fi
+grep -A2 'bool "Broadcom Generic BMIPS kernel"' arch/mips/Kconfig | grep -q SYS_SUPPORTS_ZBOOT || \
+    { echo "!! Kconfig ZBOOT patch failed"; exit 1; }
+
+# --- Firmware baked in via CONFIG_EXTRA_FIRMWARE (repo fw/, mounted at /work/fw) ---
+for f in rtw88/rtw8822b_fw.bin regulatory.db; do
+    [ -f "/work/fw/$f" ] || { echo "!! /work/fw/$f missing — CONFIG_EXTRA_FIRMWARE build will fail"; exit 1; }
+done
+
 # --- Configure: bmips_stb_defconfig + our minimal fragment ---
 echo "[*] Configuring (bmips_stb_defconfig + kernel/config/airties.config)..."
 make bmips_stb_defconfig
@@ -173,9 +188,11 @@ scripts/kconfig/merge_config.sh -m .config /work/kernel/config/airties.config >/
 make olddefconfig
 
 # --- Build ---
-echo "[*] Building vmlinux (-j$(nproc))..."
+# vmlinuz = self-decompressing ELF (builds vmlinux as a prerequisite); it is
+# what gets flashed to mtd4 — CFE boots it exactly like a raw kernel ELF.
+echo "[*] Building vmlinuz (-j$(nproc))..."
 set +e
-make -j"$(nproc)" vmlinux 2>&1 | tee /tmp/kernel_build.log | tail -30
+make -j"$(nproc)" vmlinuz 2>&1 | tee /tmp/kernel_build.log | tail -30
 RET=${PIPESTATUS[0]}
 set -e
 if [ "$RET" -ne 0 ]; then
@@ -186,22 +203,24 @@ if [ "$RET" -ne 0 ]; then
     exit 1
 fi
 
-# --- Output: stripped ELF (what CFE boots) + raw/gz fallbacks ---
+# --- Output: vmlinuz (what CFE boots / gets flashed) + raw vmlinux for debug ---
 echo "[*] Preparing output..."
+[ -f vmlinuz ] || { echo "!!! vmlinuz missing after build !!!"; exit 1; }
+cp vmlinuz /output/vmlinuz
 cp vmlinux /output/vmlinux
 "${CROSS}-strip" --strip-all /output/vmlinux
-"${CROSS}-objcopy" -O binary vmlinux /output/vmlinux.bin
-gzip -9 -c /output/vmlinux.bin > /output/vmlinux.bin.gz
 cp .config /output/kernel_config
 
 echo ""
 echo "=== Build results ==="
-ls -lh /output/vmlinux /output/vmlinux.bin /output/vmlinux.bin.gz
+ls -lh /output/vmlinuz /output/vmlinux
 strings /output/vmlinux | grep 'Linux version' | head -1
 
 KSIZE=$(stat -c %s /output/vmlinux)
-echo "Kernel ELF size: ${KSIZE} bytes ($((KSIZE / 1024)) KB) — mtd4 limit is 7340032 (7 MB)"
-if [ "$KSIZE" -gt 7340032 ]; then
-    echo "!!! WARNING: vmlinux exceeds the 7 MB kernel partition — do NOT flash this !!!"
+ZSIZE=$(stat -c %s /output/vmlinuz)
+echo "vmlinux (raw): ${KSIZE} bytes ($((KSIZE / 1024)) KB)"
+echo "vmlinuz (flashed): ${ZSIZE} bytes ($((ZSIZE / 1024)) KB) — mtd4 limit is 7340032 (7 MB)"
+if [ "$ZSIZE" -gt 7340032 ]; then
+    echo "!!! WARNING: vmlinuz exceeds the 7 MB kernel partition — do NOT flash this !!!"
     exit 2
 fi
