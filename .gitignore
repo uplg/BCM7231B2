@@ -8,6 +8,12 @@ build/
 device/authorized_keys
 device/dropbear/
 
+# WiFi credentials baked into the rootfs (personal, not for the repo)
+device/wpa_supplicant.conf
+
+# kird config baked into the rootfs (LAN IP + API token, not for the repo)
+device/kird.conf
+
 # CFE environment dump — contains device HDCP keys and serial number
 defaultenv.txt
 

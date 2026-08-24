@@ -1,0 +1,12 @@
+# Copy to device/wpa_supplicant.conf (gitignored) and fill in your network.
+# Baked into /etc/wpa_supplicant.conf at rootfs build; later edits on the box
+# persist through the /config overlay.
+ctrl_interface=/var/run/wpa_supplicant
+country=FR
+
+network={
+    ssid="YOUR_SSID"
+    psk="YOUR_PASSPHRASE"
+    # Or a precomputed 64-hex PSK (wpa_passphrase <ssid> <pass>), no quotes:
+    # psk=0123abcd...
+}

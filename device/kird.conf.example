@@ -1,0 +1,7 @@
+# kird — Ruwido remote -> maison bridge.
+# Copy to device/kird.conf (gitignored) and point at the maison backend.
+# Baked into /etc/kird.conf at rootfs build; on-box edits persist via the
+# /config overlay. Token must match IR_API_TOKEN in maison's .env.
+KIRD_URL=http://192.168.1.40:3033/api/ir/key
+KIRD_TOKEN=change-me
+KIRD_DEVICE=/dev/input/event0

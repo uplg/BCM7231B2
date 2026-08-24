@@ -8,10 +8,12 @@ Makefile-driven build, SSH-based iteration.
 
 | Component | Version |
 |-----------|---------|
-| Kernel | Linux 7.1.x mainline (built-in DTB, < 7 MB stripped ELF) |
+| Kernel | Linux mainline, flashed as self-decompressing `vmlinuz` (ZBOOT, ~3.3 MB — raw vmlinux outgrew the 7 MB mtd4 when WiFi landed) |
 | BusyBox | 1.38.x (static, ash) |
 | SSH | Dropbear 2026.x (Ed25519, ChaCha20-Poly1305, post-quantum hybrid KEX) |
 | Web | lighttpd 1.4.x (HTTP/2, TLS 1.3 via mbedTLS, static) |
+| WiFi | wpa_supplicant (static, nl80211 + internal TLS — WPA2-PSK) |
+| IR bridge | `kird` (static Rust, edition 2024): forwards Ruwido remote key events from the KIR driver to maison's `/api/ir/key` |
 | Extras | mtd-utils on-box (self-reflash), GENET/EPHY diagnostic tools |
 
 All binaries are **statically linked** (musl, MIPS32 R1) — the rootfs has no
@@ -21,6 +23,7 @@ shared libraries. Versions are pinned in the `Makefile`.
 
 | Component | Detail |
 |-----------|--------|
+| **WiFi** | Netgear A6150 USB dongle (RTL8812BU) — mainline rtw88_8822bu, firmware baked into the kernel |
 | **SoC** | Broadcom BCM7231B2 — dual-core BMIPS4380 @ 594 MHz |
 | **ISA** | MIPS32 Release 1 ONLY (R2 binaries crash with "Illegal instruction") |
 | **RAM** | 2×256 MB (~212 MB usable) |
@@ -62,6 +65,26 @@ make kernel KERNEL_VERSION=6.18.39   # build another kernel version
 make kernel GENET_DEBUG=1            # re-enable GENET printk instrumentation
 make kernel-clean                    # drop persistent kernel trees
 ```
+
+### Device configuration baked into the rootfs
+
+Personal files under `device/` (all gitignored, `.example` templates committed):
+
+- `device/wpa_supplicant.conf` — WiFi credentials (`wlan0` comes up at boot
+  when the A6150 dongle and this file are present; on-box edits persist via
+  the `/config` overlay)
+- `device/kird.conf` — maison URL + `IR_API_TOKEN` machine token for the
+  IR bridge (`/etc/init.d/kird` supervises the daemon)
+- `device/authorized_keys`, `device/dropbear/` — SSH material (see below)
+
+### kird — remote control bridge
+
+The KIR driver decodes the Ruwido remote in hardware and delivers keycodes on
+`/dev/input/event0`; `kird` (kird/, static Rust built via nightly build-std
+against a custom MIPS32 R1 target spec — see scripts/kird-build.sh) POSTs
+every key event to maison, which maps keys to actions (frontend
+configurator, `/remote`). Unmapped keys land in maison's log and its
+`/api/ir/recent`, which is how new buttons are discovered.
 
 ### SSH access
 

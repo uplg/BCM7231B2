@@ -10,7 +10,7 @@
 #   make kernel KERNEL_VERSION=7.1.4   — try another kernel
 # =============================================================================
 
-KERNEL_VERSION   ?= 7.1.4
+KERNEL_VERSION   ?= 7.2
 # GENET_DEBUG=1 re-enables the bcmgenet printk instrumentation
 # (kernel/patch_bcmgenet_debug.py). Off by default since the IRQ
 # off-by-one root cause was fixed in the DTS.
@@ -20,6 +20,8 @@ DROPBEAR_VERSION ?= 2026.92
 MTDUTILS_VERSION ?= 2.1.2
 LIGHTTPD_VERSION ?= 1.4.85
 MBEDTLS_VERSION  ?= 3.6.7
+WPA_VERSION      ?= 2.11
+LIBNL_VERSION    ?= 3.11.0
 
 BUILDER_IMAGE ?= airties-builder
 KBUILD_VOLUME ?= airties-kbuild
@@ -46,11 +48,15 @@ DOCKER_RUN = docker run --rm --platform linux/amd64 \
 # files) persist across builds — incremental rebuilds instead of 30 minutes.
 DOCKER_RUN_KERNEL = $(subst -w /work,-v $(KBUILD_VOLUME):/kbuild -e KERNEL_VERSION=$(KERNEL_VERSION) -e GENET_DEBUG=$(GENET_DEBUG) -w /work,$(DOCKER_RUN))
 
+# kird gets a named volume for the cargo registry so build-std's crate
+# downloads survive between builds.
+DOCKER_RUN_KIRD = $(subst -w /work,-v airties-cargo:/opt/cargo/registry -w /work,$(DOCKER_RUN))
+
 # Small static diagnostic tools, one .c each in src/
 TOOLS     := ephy_init ephy_diag genet_dump irq_dump init_raw init_test mount kir_probe memprobe mxl_probe xpt_cap dvbzap tunerd
 TOOL_BINS := $(addprefix $(OUT)/,$(TOOLS))
 
-.PHONY: help all builder kernel busybox dropbear mtdutils tools rootfs squashfs \
+.PHONY: help all builder kernel busybox dropbear mtdutils tools wpa kird rootfs squashfs \
         tftp cfe-help flash-rootfs flash-kernel connect \
         clean kernel-clean distclean
 
@@ -97,6 +103,8 @@ $(STAMP)/mtdutils-$(MTDUTILS_VERSION).version:
 	@mkdir -p $(STAMP); rm -f $(STAMP)/mtdutils-*.version; touch $@
 $(STAMP)/lighttpd-$(LIGHTTPD_VERSION)-$(MBEDTLS_VERSION).version:
 	@mkdir -p $(STAMP); rm -f $(STAMP)/lighttpd-*.version; touch $@
+$(STAMP)/wpa-$(WPA_VERSION)-$(LIBNL_VERSION).version:
+	@mkdir -p $(STAMP); rm -f $(STAMP)/wpa-*.version; touch $@
 
 $(OUT)/busybox: scripts/bb-build.sh $(STAMP)/builder.stamp $(STAMP)/busybox-$(BUSYBOX_VERSION).version
 	$(DOCKER_RUN) env BUSYBOX_VERSION=$(BUSYBOX_VERSION) bash scripts/bb-build.sh
@@ -113,6 +121,17 @@ $(OUT)/lighttpd: scripts/lighttpd-build.sh $(STAMP)/builder.stamp $(STAMP)/light
 		bash scripts/lighttpd-build.sh
 
 lighttpd: $(OUT)/lighttpd ## Build static lighttpd $(LIGHTTPD_VERSION) (HTTP/2, TLS via mbedTLS)
+
+$(OUT)/wpa_supplicant: scripts/wpa-build.sh $(STAMP)/builder.stamp $(STAMP)/wpa-$(WPA_VERSION)-$(LIBNL_VERSION).version
+	$(DOCKER_RUN) env WPA_VERSION=$(WPA_VERSION) LIBNL_VERSION=$(LIBNL_VERSION) \
+		bash scripts/wpa-build.sh
+
+wpa: $(OUT)/wpa_supplicant ## Build static wpa_supplicant $(WPA_VERSION) (nl80211, internal TLS)
+
+$(OUT)/kird: scripts/kird-build.sh kird/Cargo.toml kird/src/main.rs $(STAMP)/builder.stamp
+	$(DOCKER_RUN_KIRD) bash scripts/kird-build.sh
+
+kird: $(OUT)/kird ## Build the kird IR->maison daemon (static Rust, MIPS32 R1)
 
 # (stamp file: macOS make 3.81 has no grouped targets for the two binaries)
 $(OUT)/.mtdutils.stamp: scripts/mtdutils-build.sh $(STAMP)/builder.stamp $(STAMP)/mtdutils-$(MTDUTILS_VERSION).version
@@ -142,7 +161,7 @@ tools: $(TOOL_BINS) ## Build the static diagnostic tools ($(TOOLS))
 # -----------------------------------------------------------------------------
 # RootFS
 # -----------------------------------------------------------------------------
-rootfs: $(OUT)/busybox $(OUT)/dropbearmulti $(OUT)/lighttpd $(OUT)/flash_erase $(TOOL_BINS) ## Assemble rootfs tree in new_rootfs/
+rootfs: $(OUT)/busybox $(OUT)/dropbearmulti $(OUT)/lighttpd $(OUT)/wpa_supplicant $(OUT)/kird $(OUT)/flash_erase $(TOOL_BINS) ## Assemble rootfs tree in new_rootfs/
 	BASEDIR="$(CURDIR)" OUTDIR="$(CURDIR)/$(OUT)" NEWROOT="$(CURDIR)/new_rootfs" \
 		bash scripts/mkrootfs.sh
 
@@ -154,11 +173,11 @@ squashfs: rootfs ## Pack new_rootfs/ -> new_rootfs.squashfs (gzip, 128K blocks)
 # -----------------------------------------------------------------------------
 # Deploy / flash
 # -----------------------------------------------------------------------------
-tftp: ## Copy vmlinux + squashfs to $(TFTP_DIR) and start macOS tftpd (sudo)
-	@test -f $(OUT)/vmlinux || { echo "!! $(OUT)/vmlinux missing — run: make kernel"; exit 1; }
+tftp: ## Copy vmlinuz + squashfs to $(TFTP_DIR) and start macOS tftpd (sudo)
+	@test -f $(OUT)/vmlinuz || { echo "!! $(OUT)/vmlinuz missing — run: make kernel"; exit 1; }
 	@test -f new_rootfs.squashfs || { echo "!! new_rootfs.squashfs missing — run: make squashfs"; exit 1; }
 	sudo mkdir -p $(TFTP_DIR)
-	sudo cp $(OUT)/vmlinux $(TFTP_DIR)/vmlinux
+	sudo cp $(OUT)/vmlinuz $(TFTP_DIR)/vmlinuz
 	sudo cp new_rootfs.squashfs $(TFTP_DIR)/new_rootfs.squashfs
 	sudo launchctl load -F /System/Library/LaunchDaemons/tftp.plist 2>/dev/null || true
 	@if /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null | grep -q enabled; then \
@@ -175,8 +194,11 @@ cfe-help: ## Print the CFE flash commands (first flash / recovery)
 	@echo "In the CFE console (Ctrl+C during boot):"
 	@echo "  CFE> ifconfig eth0 -addr=$(DEVICE_IP) -mask=255.255.255.0 -gw=$(HOST_IP)"
 	@echo "  CFE> flash $(HOST_IP):new_rootfs.squashfs nandflash0.rootfs -noheader"
-	@echo "  CFE> flash $(HOST_IP):vmlinux nandflash0.kernel -noheader"
+	@echo "  CFE> flash $(HOST_IP):vmlinuz nandflash0.kernel -noheader"
 	@echo "  CFE> boot nandflash0.kernel:"
+	@echo ""
+	@echo "To test a kernel WITHOUT flashing it (recommended for a new vmlinuz):"
+	@echo "  CFE> boot -elf $(HOST_IP):vmlinuz"
 	@echo ""
 
 # On-device reflash over SSH — the running custom firmware ships flash_erase +
@@ -189,12 +211,12 @@ flash-rootfs: ## Flash new_rootfs.squashfs to mtd5 over SSH, then reboot
 	scp -O $(OUT)/flash_erase $(OUT)/nandwrite root@$(DEVICE_IP):/dev/shm/
 	$(SSH) 'cd /dev/shm && chmod +x flash_erase nandwrite && ./flash_erase /dev/mtd5 0 0 && ./nandwrite -p /dev/mtd5 new_rootfs.squashfs && sync && reboot'
 
-flash-kernel: ## Flash build_output/vmlinux to mtd4 over SSH, then reboot (CFE recovers if it fails)
-	@test -f $(OUT)/vmlinux || { echo "!! $(OUT)/vmlinux missing — run: make kernel"; exit 1; }
+flash-kernel: ## Flash build_output/vmlinuz to mtd4 over SSH, then reboot (CFE recovers if it fails)
+	@test -f $(OUT)/vmlinuz || { echo "!! $(OUT)/vmlinuz missing — run: make kernel"; exit 1; }
 	@echo ">>> Flashing KERNEL (mtd4) on $(DEVICE_IP) in 5s — Ctrl+C to abort"; sleep 5
-	scp -O $(OUT)/vmlinux root@$(DEVICE_IP):/dev/shm/vmlinux
+	scp -O $(OUT)/vmlinuz root@$(DEVICE_IP):/dev/shm/vmlinuz
 	scp -O $(OUT)/flash_erase $(OUT)/nandwrite root@$(DEVICE_IP):/dev/shm/
-	$(SSH) 'cd /dev/shm && chmod +x flash_erase nandwrite && ./flash_erase /dev/mtd4 0 0 && ./nandwrite -p /dev/mtd4 vmlinux && sync && reboot'
+	$(SSH) 'cd /dev/shm && chmod +x flash_erase nandwrite && ./flash_erase /dev/mtd4 0 0 && ./nandwrite -p /dev/mtd4 vmlinuz && sync && reboot'
 
 connect: ## Open the UART console (picocom, logs to logs/)
 	tools/airties.sh connect

@@ -52,7 +52,7 @@ sync sysctl syslogd tac tail tar tee telnetd test time
 top touch tr traceroute true tty udhcpc udhcpd umount uname
 uniq uptime usleep vi watch wc wget which
 who whoami xargs yes httpd crond crontab awk insmod rmmod lsmod
-logger clear basename dirname realpath"
+logger logread clear basename dirname realpath pidof"
 
 cd "$NEWROOT/bin"
 for a in $APPLETS; do ln -sf busybox "$a" 2>/dev/null || true; done
@@ -151,6 +151,41 @@ $SERVER["socket"] == ":443" {
     ssl.pemfile = "/etc/lighttpd/server.pem"
 }
 LIGHTTPDCONF
+fi
+
+# --- WiFi userland: wpa_supplicant for the Netgear A6150 dongle (rtw88) ---
+for t in wpa_supplicant wpa_cli wpa_passphrase; do
+    if [ -f "$OUTDIR/$t" ]; then
+        info "+ $t"
+        cp "$OUTDIR/$t" "$NEWROOT/usr/sbin/$t"; chmod 755 "$NEWROOT/usr/sbin/$t"
+    else
+        warn "$t not built — WiFi won't come up (run: make wpa)"
+    fi
+done
+
+# WiFi credentials: device/wpa_supplicant.conf (gitignored) baked into /etc.
+# The /config overlay makes later on-box edits persistent.
+if [ -f "$BASEDIR/device/wpa_supplicant.conf" ]; then
+    info "Installing wpa_supplicant.conf..."
+    cp "$BASEDIR/device/wpa_supplicant.conf" "$NEWROOT/etc/wpa_supplicant.conf"
+    chmod 600 "$NEWROOT/etc/wpa_supplicant.conf"
+else
+    warn "No device/wpa_supplicant.conf — WiFi stays down (see device/wpa_supplicant.conf.example)"
+fi
+
+# --- kird: Ruwido remote -> maison HTTP bridge ---
+if [ -f "$OUTDIR/kird" ]; then
+    info "+ kird"
+    cp "$OUTDIR/kird" "$NEWROOT/usr/sbin/kird"; chmod 755 "$NEWROOT/usr/sbin/kird"
+else
+    warn "kird not built — remote won't reach maison (run: make kird)"
+fi
+if [ -f "$BASEDIR/device/kird.conf" ]; then
+    info "Installing kird.conf..."
+    cp "$BASEDIR/device/kird.conf" "$NEWROOT/etc/kird.conf"
+    chmod 600 "$NEWROOT/etc/kird.conf"
+else
+    warn "No device/kird.conf — kird stays down (see device/kird.conf.example)"
 fi
 
 # --- Flash tools: let the box reflash itself over SSH (make flash-rootfs) ---
@@ -323,6 +358,13 @@ fi
 syslogd -C256
 klogd
 
+# WiFi + kird, after syslogd (they log through it). Backgrounded with fds
+# detached from the console: getty's vhangup() on ttyS0 would otherwise kill
+# them once rcS ends (wifi waits up to 10s for USB enumeration).
+[ -x /etc/init.d/wifi ] && /etc/init.d/wifi </dev/null >/dev/null 2>&1 &
+# kird: Ruwido remote -> maison bridge (no-op without /etc/kird.conf)
+[ -x /etc/init.d/kird ] && /etc/init.d/kird </dev/null >/dev/null 2>&1
+
 # Hardware watchdog (bcm7038-wdt): 60 s timeout, petted every 10 s.
 # A hard hang (kernel or PID-storm) stops the petting -> hardware reset
 # -> CFE STARTUP chain boots the kernel (or recovery if it's corrupt).
@@ -411,10 +453,55 @@ fi
 SERVICESCRIPT
 chmod 755 "$NEWROOT/etc/init.d/rcServices"
 
+cat > "$NEWROOT/etc/init.d/wifi" << 'WIFISCRIPT'
+#!/bin/sh
+# Bring up wlan0 (Netgear A6150 / rtw88_8822bu) — idempotent, safe to re-run.
+# Credentials: /etc/wpa_supplicant.conf (persistent via the /config overlay).
+[ -x /usr/sbin/wpa_supplicant ] || exit 0
+[ -f /etc/wpa_supplicant.conf ] || exit 0
+
+# USB enumeration + firmware load can land a few seconds after rcS runs
+n=0
+while [ ! -d /sys/class/net/wlan0 ] && [ "$n" -lt 20 ]; do usleep 500000; n=$((n+1)); done
+[ -d /sys/class/net/wlan0 ] || { logger -t wifi "no wlan0 (dongle absent?)"; exit 1; }
+
+ifconfig wlan0 up 2>/dev/null || true
+if ! pidof wpa_supplicant >/dev/null 2>&1; then
+    /usr/sbin/wpa_supplicant -B -s -i wlan0 -c /etc/wpa_supplicant.conf
+fi
+PIDFILE=/var/run/udhcpc.wlan0.pid
+if [ ! -f "$PIDFILE" ] || ! kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+    udhcpc -i wlan0 -s /etc/network/udhcpc.script -b -p "$PIDFILE" >/dev/null 2>&1
+fi
+WIFISCRIPT
+chmod 755 "$NEWROOT/etc/init.d/wifi"
+
+cat > "$NEWROOT/etc/init.d/kird" << 'KIRDSCRIPT'
+#!/bin/sh
+# kird supervisor — Ruwido remote -> maison HTTP bridge. Idempotent.
+# Config: /etc/kird.conf (persistent via the /config overlay).
+[ -x /usr/sbin/kird ] || exit 0
+[ -f /etc/kird.conf ] || exit 0
+# Idempotence: look for the real daemon binary. A bare `pidof kird` would
+# match THIS script (comm is also "kird" when rcS execs it directly).
+for pid in $(pidof kird); do
+    [ "$(readlink /proc/$pid/exe 2>/dev/null)" = "/usr/sbin/kird" ] && exit 0
+done
+. /etc/kird.conf
+export KIRD_URL KIRD_TOKEN KIRD_DEVICE
+(
+    while :; do
+        /usr/sbin/kird 2>&1 | logger -t kird
+        sleep 5
+    done
+) </dev/null >/dev/null 2>&1 &
+KIRDSCRIPT
+chmod 755 "$NEWROOT/etc/init.d/kird"
+
 cat > "$NEWROOT/etc/init.d/rcK" << 'STOPSCRIPT'
 #!/bin/sh
 echo "[shutdown] Stopping services..."
-killall dropbear httpd syslogd klogd 2>/dev/null
+killall dropbear httpd syslogd klogd wpa_supplicant udhcpc kird 2>/dev/null
 echo "[shutdown] Unmounting filesystems..."
 umount -a -r 2>/dev/null
 sync
