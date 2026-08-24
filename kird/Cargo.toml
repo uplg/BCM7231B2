@@ -1,0 +1,14 @@
+[package]
+name = "kird"
+version = "0.1.0"
+edition = "2024"
+
+# Zero dependencies on purpose: std-only keeps the Tier 3 build-std cross
+# build trivial and the static binary tiny. Plain HTTP on the LAN, no TLS.
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+lto = true
+panic = "abort"
+codegen-units = 1

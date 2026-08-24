@@ -42,4 +42,16 @@ RUN CROSS=$(ls /opt/toolchain/bin/*-gcc | head -1 | sed 's/-gcc$//' | xargs base
 # Kept as a separate late layer so adding it doesn't invalidate the toolchain cache.
 RUN apt-get update -qq && apt-get install -y -qq cmake && rm -rf /var/lib/apt/lists/*
 
+# Rust nightly + rust-src for the kird daemon: mipsel-unknown-linux-musl is
+# Tier 3 (no prebuilt std) AND defaults to MIPS32 R2, so kird builds std from
+# source against a custom R1 target spec (see scripts/kird-build.sh).
+# Late layer: adding/refreshing Rust never invalidates the C toolchain cache.
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
+RUN wget -qO /tmp/rustup-init https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --profile minimal --default-toolchain nightly-2026-08-01 \
+        --component rust-src \
+    && rm /tmp/rustup-init
+ENV PATH=/opt/cargo/bin:$PATH
+
 WORKDIR /work
