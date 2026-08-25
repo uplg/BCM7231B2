@@ -480,18 +480,24 @@ cat > "$NEWROOT/etc/init.d/kird" << 'KIRDSCRIPT'
 #!/bin/sh
 # kird supervisor — Ruwido remote -> maison HTTP bridge. Idempotent.
 # Config: /etc/kird.conf (persistent via the /config overlay).
-[ -x /usr/sbin/kird ] || exit 0
+#
+# The binary is preferred from /config (jffs2, writable) so it can be swapped
+# without reflashing the read-only squashfs rootfs; /usr/sbin is the copy
+# baked into the image.
+KIRD_BIN=/usr/sbin/kird
+[ -x /config/kird ] && KIRD_BIN=/config/kird
+[ -x "$KIRD_BIN" ] || exit 0
 [ -f /etc/kird.conf ] || exit 0
 # Idempotence: look for the real daemon binary. A bare `pidof kird` would
 # match THIS script (comm is also "kird" when rcS execs it directly).
 for pid in $(pidof kird); do
-    [ "$(readlink /proc/$pid/exe 2>/dev/null)" = "/usr/sbin/kird" ] && exit 0
+    [ "$(readlink /proc/$pid/exe 2>/dev/null)" = "$KIRD_BIN" ] && exit 0
 done
 . /etc/kird.conf
 export KIRD_URL KIRD_TOKEN KIRD_DEVICE
 (
     while :; do
-        /usr/sbin/kird 2>&1 | logger -t kird
+        "$KIRD_BIN" 2>&1 | logger -t kird
         sleep 5
     done
 ) </dev/null >/dev/null 2>&1 &

@@ -9,15 +9,38 @@
 //! Every EV_KEY event is forwarded with its value (1=press, 2=autorepeat,
 //! 0=release) — maison decides what to act on. A failed send drops the event:
 //! keypresses are ephemeral, there is nothing useful to queue.
+//!
+//! Reading and sending are deliberately decoupled. The remote emits a frame
+//! every ~120 ms while a key is held, and maison can take longer than that to
+//! answer (an ADB round-trip to the TV box runs ~150 ms, far more if the box
+//! is asleep). Posting inline would block the read loop past the next frame,
+//! so every held key accrued delay — a third of a second after ten frames,
+//! growing for as long as the button was down.
+//!
+//! So the reader never blocks: it stamps each event and hands it to a single
+//! sender thread through a bounded channel. One thread keeps ordering intact.
+//! Stale autorepeats are dropped rather than replayed late, which is what
+//! stops the backlog from simply moving into the queue; presses and releases
+//! always go through, however late, because those carry the user's intent.
 
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
-use std::time::Duration;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::sync::mpsc::{sync_channel, TrySendError};
+use std::time::{Duration, Instant};
 
 const EV_KEY: u16 = 1;
 /// struct input_event on a 32-bit kernel ABI: u32 sec, u32 usec,
 /// u16 type, u16 code, i32 value — 16 bytes, little-endian on mipsel.
 const EVENT_SIZE: usize = 16;
+
+/// Deep enough to ride out a slow backend reply, shallow enough that a
+/// wedged backend cannot bank seconds of keypresses to replay later.
+const QUEUE_DEPTH: usize = 64;
+
+/// An autorepeat older than this has been overtaken by reality: the frame it
+/// represents is two remote frames in the past. Dropping it is what keeps the
+/// D-pad tracking the finger instead of trailing it.
+const MAX_AUTOREPEAT_AGE: Duration = Duration::from_millis(250);
 
 struct Url {
     host: String,
@@ -44,13 +67,9 @@ fn parse_url(url: &str) -> Result<Url, String> {
     })
 }
 
-fn post(url: &Url, token: &str, body: &str) -> Result<(), String> {
-    let addr = (url.host.as_str(), url.port)
-        .to_socket_addrs()
-        .map_err(|e| format!("resolve: {e}"))?
-        .next()
-        .ok_or("resolve: no address")?;
-    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(3))
+/// `addr` is resolved once at startup rather than per keypress.
+fn post(addr: &SocketAddr, url: &Url, token: &str, body: &str) -> Result<(), String> {
+    let mut s = TcpStream::connect_timeout(addr, Duration::from_secs(3))
         .map_err(|e| format!("connect: {e}"))?;
     let _ = s.set_write_timeout(Some(Duration::from_secs(3)));
     let _ = s.set_read_timeout(Some(Duration::from_secs(3)));
@@ -76,6 +95,13 @@ fn post(url: &Url, token: &str, body: &str) -> Result<(), String> {
     }
 }
 
+/// One keypress on its way out, stamped when it left the driver.
+struct Event {
+    code: u16,
+    value: i32,
+    at: Instant,
+}
+
 fn main() {
     let url_raw = std::env::var("KIRD_URL").expect("KIRD_URL not set");
     let token = std::env::var("KIRD_TOKEN").expect("KIRD_TOKEN not set");
@@ -88,7 +114,42 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    // Resolved once: doing it per keypress put a lookup on the hot path.
+    let addr = match (url.host.as_str(), url.port).to_socket_addrs() {
+        Ok(mut addrs) => match addrs.next() {
+            Some(addr) => addr,
+            None => {
+                eprintln!("resolve {}: no address", url.host);
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("resolve {}: {e}", url.host);
+            std::process::exit(1);
+        }
+    };
+
     println!("forwarding {device} -> {url_raw}");
+
+    let (tx, rx) = sync_channel::<Event>(QUEUE_DEPTH);
+
+    // Single sender thread: keeps events in order without ever blocking the
+    // reader. Ordering matters — a release overtaking its press would leave
+    // maison believing a key is still held.
+    std::thread::spawn(move || {
+        for ev in rx {
+            // Presses and releases carry intent and always go through, even
+            // late. Autorepeat is a stream: a stale one is noise.
+            if ev.value == 2 && ev.at.elapsed() > MAX_AUTOREPEAT_AGE {
+                continue;
+            }
+            let body = format!("{{\"code\":{},\"value\":{}}}", ev.code, ev.value);
+            if let Err(e) = post(&addr, &url, &token, &body) {
+                eprintln!("key {} (value {}) dropped: {e}", ev.code, ev.value);
+            }
+        }
+    });
 
     loop {
         let mut f = match std::fs::File::open(&device) {
@@ -112,9 +173,21 @@ fn main() {
             if typ != EV_KEY {
                 continue;
             }
-            let body = format!("{{\"code\":{code},\"value\":{value}}}");
-            if let Err(e) = post(&url, &token, &body) {
-                eprintln!("key {code} (value {value}) dropped: {e}");
+            // try_send, never send: a full queue means the backend is behind,
+            // and blocking here is precisely the bug this design removes.
+            match tx.try_send(Event {
+                code,
+                value,
+                at: Instant::now(),
+            }) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    eprintln!("key {code} (value {value}) dropped: queue full")
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    eprintln!("sender thread died — exiting");
+                    std::process::exit(1);
+                }
             }
         }
     }
