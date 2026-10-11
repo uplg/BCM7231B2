@@ -36,3 +36,5 @@ logs/
 .DS_Store
 
 __pycache__
+# Backup target: the servers' public keys (one backup account each)
+device/vykar/

@@ -33,7 +33,7 @@ err()   { echo -e "${RED}[!]${NC} $1"; exit 1; }
 # --- Clean tree ---
 rm -rf "$NEWROOT"
 info "Building rootfs tree..."
-mkdir -p "$NEWROOT"/{bin,sbin,usr/{bin,sbin,lib,share/www},lib,etc/{init.d,dropbear,params,network},dev,proc,sys,tmp,var/{run,log,tmp,lib},mnt/usb,media,root,home,config}
+mkdir -p "$NEWROOT"/{bin,sbin,usr/{bin,sbin,lib,share/www},lib,etc/{init.d,dropbear,params,network},dev,proc,sys,tmp,var/{run,log,tmp,lib},mnt/usb,media,root,home,config,srv/backup}
 
 # --- BusyBox ---
 info "Installing BusyBox..."
@@ -198,6 +198,65 @@ for t in flash_erase nandwrite; do
     fi
 done
 
+# --- Backup target: ext4 disk, chrooted SFTP accounts, SMART reports ---
+# A server <host> gets the account vykar-<host>, chrooted by OpenSSH into
+# /srv/backup/vykar-<host> (SFTP only), when device/vykar/<host>.pub holds
+# its public key. Without OpenSSH or keys the image has no backup role.
+for t in mke2fs tune2fs e2fsck; do
+    if [ -f "$OUTDIR/$t" ]; then info "+ $t"; cp "$OUTDIR/$t" "$NEWROOT/sbin/$t"; chmod 755 "$NEWROOT/sbin/$t"; fi
+done
+[ -f "$NEWROOT/sbin/mke2fs" ] && ln -sf mke2fs "$NEWROOT/sbin/mkfs.ext4"
+[ -f "$NEWROOT/sbin/e2fsck" ] && ln -sf e2fsck "$NEWROOT/sbin/fsck.ext4"
+if [ -f "$OUTDIR/smartctl" ]; then
+    info "+ smartctl"
+    cp "$OUTDIR/smartctl" "$NEWROOT/usr/sbin/smartctl"; chmod 755 "$NEWROOT/usr/sbin/smartctl"
+fi
+
+BACKUP_HOSTS=""
+if [ -f "$OUTDIR/sshd" ] && ls "$BASEDIR"/device/vykar/*.pub >/dev/null 2>&1; then
+    info "+ OpenSSH (backup accounts)"
+    mkdir -p "$NEWROOT/usr/libexec" "$NEWROOT/etc/ssh/vykar_authorized_keys"
+    cp "$OUTDIR/sshd" "$NEWROOT/usr/sbin/sshd"
+    cp "$OUTDIR/sshd-session" "$OUTDIR/sshd-auth" "$NEWROOT/usr/libexec/"
+    cp "$OUTDIR/ssh-keygen" "$NEWROOT/usr/bin/ssh-keygen"
+    chmod 755 "$NEWROOT/usr/sbin/sshd" "$NEWROOT"/usr/libexec/sshd-* "$NEWROOT/usr/bin/ssh-keygen"
+    for k in "$BASEDIR"/device/vykar/*.pub; do
+        h=$(basename "$k" .pub)
+        BACKUP_HOSTS="$BACKUP_HOSTS $h"
+        echo "restrict $(cat "$k")" > "$NEWROOT/etc/ssh/vykar_authorized_keys/vykar-$h"
+        chmod 644 "$NEWROOT/etc/ssh/vykar_authorized_keys/vykar-$h"
+        info "  account vykar-$h"
+    done
+    BACKUP_HOSTS="${BACKUP_HOSTS# }"
+    echo "$BACKUP_HOSTS" > "$NEWROOT/etc/ssh/backup_hosts"
+    ACCOUNTS=$(for h in $BACKUP_HOSTS; do printf 'vykar-%s,' "$h"; done)
+
+    cat > "$NEWROOT/etc/ssh/sshd_config" << SSHDCONF
+# AirTies backup target — OpenSSH for the backup accounts only (Dropbear on
+# port 22 stays the admin SSH). Key only, SFTP only, each account locked in
+# its own chroot on the backup disk.
+Port 2222
+HostKey /etc/ssh/ssh_host_ed25519_key
+PidFile /var/run/sshd.pid
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AllowGroups vykar
+AuthorizedKeysFile /etc/ssh/vykar_authorized_keys/%u
+StrictModes yes
+Subsystem sftp internal-sftp
+Match User ${ACCOUNTS%,}
+    ChrootDirectory /srv/backup/%u
+    ForceCommand internal-sftp -d /repo
+    AllowTcpForwarding no
+    AllowStreamLocalForwarding no
+    AllowAgentForwarding no
+    X11Forwarding no
+    PermitTTY no
+    PermitTunnel no
+SSHDCONF
+fi
+
 # --- Optional diagnostic tools (included only if built) ---
 # init_raw wins over init_test for the /sbin/init_test slot (raw-syscall diag).
 if   [ -f "$OUTDIR/init_raw" ];  then info "+ init_raw (as /sbin/init_test)";  cp "$OUTDIR/init_raw"  "$NEWROOT/sbin/init_test"; chmod 755 "$NEWROOT/sbin/init_test"
@@ -235,6 +294,18 @@ www:x:33:
 nogroup:x:65534:
 sshd:x:22:
 EOF
+
+# Backup accounts: no password ("*" = no password login, keys still work;
+# "!" would lock the key out too), a shell that is never run.
+if [ -n "$BACKUP_HOSTS" ]; then
+    echo "vykar:x:600:" >> "$NEWROOT/etc/group"
+    uid=601
+    for h in $BACKUP_HOSTS; do
+        echo "vykar-$h:x:$uid:600:vykar backups of $h:/srv/backup/vykar-$h:/bin/false" >> "$NEWROOT/etc/passwd"
+        echo "vykar-$h:*:0:0:99999:7:::" >> "$NEWROOT/etc/shadow"
+        uid=$((uid + 1))
+    done
+fi
 
 echo "AirTies" > "$NEWROOT/etc/hostname"
 
@@ -364,6 +435,12 @@ klogd
 [ -x /etc/init.d/wifi ] && /etc/init.d/wifi </dev/null >/dev/null 2>&1 &
 # kird: Ruwido remote -> maison bridge (no-op without /etc/kird.conf)
 [ -x /etc/init.d/kird ] && /etc/init.d/kird </dev/null >/dev/null 2>&1
+# Backup target (disk, clock, tailnet, SFTP); without it, just the clock
+if [ -x /etc/init.d/backup ]; then
+    /etc/init.d/backup </dev/null >/dev/null 2>&1 &
+else
+    /etc/init.d/ntp </dev/null >/dev/null 2>&1 &
+fi
 
 # Hardware watchdog (bcm7038-wdt): 60 s timeout, petted every 10 s.
 # A hard hang (kernel or PID-storm) stops the petting -> hardware reset
@@ -504,9 +581,107 @@ export KIRD_URL KIRD_TOKEN KIRD_DEVICE
 KIRDSCRIPT
 chmod 755 "$NEWROOT/etc/init.d/kird"
 
+cat > "$NEWROOT/etc/init.d/ntp" << 'NTPSCRIPT'
+#!/bin/sh
+# Clock: no RTC on this board, it boots in 1970 (TLS certificates then look
+# "not yet valid"). Waits for a first sync, then keeps ntpd running.
+pidof ntpd >/dev/null 2>&1 && exit 0
+PEERS="-p 0.pool.ntp.org -p 1.pool.ntp.org -p 2.pool.ntp.org"
+n=0
+until ntpd -n -q $PEERS >/dev/null 2>&1; do
+    n=$((n + 1)); [ "$n" -ge 60 ] && break
+    sleep 5
+done
+logger -t ntp "clock: $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
+ntpd $PEERS
+NTPSCRIPT
+chmod 755 "$NEWROOT/etc/init.d/ntp"
+
+if [ -n "$BACKUP_HOSTS" ]; then
+cat > "$NEWROOT/etc/init.d/backup" << 'BACKUPSCRIPT'
+#!/bin/sh
+# Backup target: mounts the backup disk (ext4, label "backup") on
+# /srv/backup, then starts tailscaled (from the disk: upgraded without a
+# reflash), the backup sshd (port 2222) and the hourly SMART report.
+# Idempotent. Runs in the background from rcS (waits for disk and clock).
+D=/srv/backup   # mount point baked into the read-only rootfs
+if ! mountpoint -q "$D"; then
+    n=0
+    while ! DEV=$(findfs LABEL=backup 2>/dev/null) && [ "$n" -lt 30 ]; do sleep 1; n=$((n + 1)); done
+    [ -n "$DEV" ] || { logger -t backup "no disk labelled 'backup'"; exit 1; }
+    # -p repairs what is safe to repair; 4 and up means a person must look
+    e2fsck -p "$DEV" > /tmp/fsck.log 2>&1; rc=$?
+    logger -t backup < /tmp/fsck.log
+    [ "$rc" -ge 4 ] && { logger -t backup "e2fsck $DEV exit $rc: not mounting"; exit 1; }
+    mount -t ext4 -o noatime "$DEV" "$D" || { logger -t backup "mount $DEV failed"; exit 1; }
+fi
+
+# Chroots: every component root-owned and not group/world-writable
+chown root:root "$D"; chmod 755 "$D"
+for h in $(cat /etc/ssh/backup_hosts); do
+    mkdir -p "$D/vykar-$h/repo"
+    chown root:root "$D/vykar-$h"; chmod 755 "$D/vykar-$h"
+    chown "vykar-$h:vykar" "$D/vykar-$h/repo"; chmod 700 "$D/vykar-$h/repo"
+done
+
+# Clock first: Headscale's TLS needs it
+/etc/init.d/ntp
+
+# tailscaled: kernel TUN when built in, else userspace networking
+TS="$D/system/tailscale"
+if [ -x "$TS/tailscaled" ] && ! pidof tailscaled >/dev/null 2>&1; then
+    mkdir -p /var/run/tailscale
+    TUN="--tun=userspace-networking"
+    [ -c /dev/net/tun ] && TUN="--tun=tailscale0"
+    (
+        while :; do
+            "$TS/tailscaled" $TUN --state="$TS/tailscaled.state" --statedir="$TS" \
+                --socket=/var/run/tailscale/tailscaled.sock --port=41641 2>&1 \
+                | logger -t tailscaled
+            sleep 5
+        done
+    ) </dev/null >/dev/null 2>&1 &
+fi
+
+# Backup sshd: host key on the persistent /etc overlay (survives reflashes)
+if [ -x /usr/sbin/sshd ] && [ ! -f /var/run/sshd.pid ]; then
+    [ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key
+    mkdir -p /var/empty; chmod 755 /var/empty
+    /usr/sbin/sshd -f /etc/ssh/sshd_config
+fi
+
+# Hourly SMART report into every chroot (read over SFTP by the servers)
+mkdir -p /var/spool/cron/crontabs
+echo "7 * * * * /usr/sbin/disk-health" > /var/spool/cron/crontabs/root
+pidof crond >/dev/null 2>&1 || crond -c /var/spool/cron/crontabs
+/usr/sbin/disk-health
+BACKUPSCRIPT
+chmod 755 "$NEWROOT/etc/init.d/backup"
+
+cat > "$NEWROOT/usr/sbin/disk-health" << 'HEALTHSCRIPT'
+#!/bin/sh
+# SMART report (smartctl -j) of the backup disk, dropped as disk-health in
+# every backup chroot: the servers read /disk-health over SFTP.
+D=/srv/backup
+mountpoint -q "$D" || exit 0
+DEV=$(findfs LABEL=backup 2>/dev/null) || exit 1
+tmp=$(mktemp) || exit 1
+# Non-zero exit bits flag warnings: the JSON says what they are
+smartctl -j -i -H -A "$DEV" > "$tmp"
+[ -s "$tmp" ] || { rm -f "$tmp"; exit 1; }
+for h in $(cat /etc/ssh/backup_hosts); do
+    c="$D/vykar-$h"
+    cp "$tmp" "$c/.disk-health.tmp" && chmod 644 "$c/.disk-health.tmp" && mv -f "$c/.disk-health.tmp" "$c/disk-health"
+done
+rm -f "$tmp"
+HEALTHSCRIPT
+chmod 755 "$NEWROOT/usr/sbin/disk-health"
+fi
+
 cat > "$NEWROOT/etc/init.d/rcK" << 'STOPSCRIPT'
 #!/bin/sh
 echo "[shutdown] Stopping services..."
+killall sshd tailscaled crond ntpd 2>/dev/null
 killall dropbear httpd syslogd klogd wpa_supplicant udhcpc kird 2>/dev/null
 echo "[shutdown] Unmounting filesystems..."
 umount -a -r 2>/dev/null

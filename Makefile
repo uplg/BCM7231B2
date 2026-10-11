@@ -10,7 +10,7 @@
 #   make kernel KERNEL_VERSION=7.1.4   — try another kernel
 # =============================================================================
 
-KERNEL_VERSION   ?= 7.2
+KERNEL_VERSION   ?= 7.2.10
 # GENET_DEBUG=1 re-enables the bcmgenet printk instrumentation
 # (kernel/patch_bcmgenet_debug.py). Off by default since the IRQ
 # off-by-one root cause was fixed in the DTS.
@@ -22,6 +22,14 @@ LIGHTTPD_VERSION ?= 1.4.85
 MBEDTLS_VERSION  ?= 3.6.7
 WPA_VERSION      ?= 2.11
 LIBNL_VERSION    ?= 3.11.0
+# Backup target (backup-home): ext4 tools, chroot SFTP, SMART, tailnet
+E2FSPROGS_VERSION     ?= 1.47.4
+OPENSSH_VERSION       ?= 10.6p1
+ZLIB_VERSION          ?= 1.3.2
+SMARTMONTOOLS_VERSION ?= 7.5
+# Official static mipsle build; sha256 from pkgs.tailscale.com (<tgz>.sha256)
+TAILSCALE_VERSION     ?= 1.104.1
+TAILSCALE_SHA256      ?= 6ad1f6c2d26f54f61312303ae9d2bad7a71b505b83ffc08cd77ed7f89875b3ac
 
 BUILDER_IMAGE ?= airties-builder
 KBUILD_VOLUME ?= airties-kbuild
@@ -57,14 +65,15 @@ TOOLS     := ephy_init ephy_diag genet_dump irq_dump init_raw init_test mount ki
 TOOL_BINS := $(addprefix $(OUT)/,$(TOOLS))
 
 .PHONY: help all builder kernel busybox dropbear mtdutils tools wpa kird rootfs squashfs \
-        tftp cfe-help flash-rootfs flash-kernel connect \
+        e2fsprogs openssh smartctl tailscale \
+        tftp cfe-help flash-rootfs flash-kernel install-tailscale connect \
         clean kernel-clean distclean
 
 .DEFAULT_GOAL := help
 
 # -----------------------------------------------------------------------------
 help: ## Show this help
-	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | \
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "  Variables: KERNEL_VERSION=$(KERNEL_VERSION)  BUSYBOX_VERSION=$(BUSYBOX_VERSION)"
@@ -105,6 +114,14 @@ $(STAMP)/lighttpd-$(LIGHTTPD_VERSION)-$(MBEDTLS_VERSION).version:
 	@mkdir -p $(STAMP); rm -f $(STAMP)/lighttpd-*.version; touch $@
 $(STAMP)/wpa-$(WPA_VERSION)-$(LIBNL_VERSION).version:
 	@mkdir -p $(STAMP); rm -f $(STAMP)/wpa-*.version; touch $@
+$(STAMP)/e2fsprogs-$(E2FSPROGS_VERSION).version:
+	@mkdir -p $(STAMP); rm -f $(STAMP)/e2fsprogs-*.version; touch $@
+$(STAMP)/openssh-$(OPENSSH_VERSION)-$(ZLIB_VERSION).version:
+	@mkdir -p $(STAMP); rm -f $(STAMP)/openssh-*.version; touch $@
+$(STAMP)/smartmontools-$(SMARTMONTOOLS_VERSION).version:
+	@mkdir -p $(STAMP); rm -f $(STAMP)/smartmontools-*.version; touch $@
+$(STAMP)/tailscale-$(TAILSCALE_VERSION).version:
+	@mkdir -p $(STAMP); rm -f $(STAMP)/tailscale-*.version; touch $@
 
 $(OUT)/busybox: scripts/bb-build.sh $(STAMP)/builder.stamp $(STAMP)/busybox-$(BUSYBOX_VERSION).version
 	$(DOCKER_RUN) env BUSYBOX_VERSION=$(BUSYBOX_VERSION) bash scripts/bb-build.sh
@@ -132,6 +149,37 @@ $(OUT)/kird: scripts/kird-build.sh kird/Cargo.toml kird/src/main.rs $(STAMP)/bui
 	$(DOCKER_RUN_KIRD) bash scripts/kird-build.sh
 
 kird: $(OUT)/kird ## Build the kird IR->maison daemon (static Rust, MIPS32 R1)
+
+# --- Backup target (backup-home) ---
+$(OUT)/mke2fs: scripts/e2fsprogs-build.sh $(STAMP)/builder.stamp $(STAMP)/e2fsprogs-$(E2FSPROGS_VERSION).version
+	$(DOCKER_RUN) env E2FSPROGS_VERSION=$(E2FSPROGS_VERSION) bash scripts/e2fsprogs-build.sh
+
+e2fsprogs: $(OUT)/mke2fs ## Build static mke2fs, e2fsck, tune2fs $(E2FSPROGS_VERSION) (ext4 backup disk)
+
+$(OUT)/sshd: scripts/openssh-build.sh $(STAMP)/builder.stamp $(STAMP)/openssh-$(OPENSSH_VERSION)-$(ZLIB_VERSION).version
+	$(DOCKER_RUN) env OPENSSH_VERSION=$(OPENSSH_VERSION) ZLIB_VERSION=$(ZLIB_VERSION) bash scripts/openssh-build.sh
+
+openssh: $(OUT)/sshd ## Build static OpenSSH $(OPENSSH_VERSION) sshd (chroot SFTP backup accounts)
+
+$(OUT)/smartctl: scripts/smartmontools-build.sh $(STAMP)/builder.stamp $(STAMP)/smartmontools-$(SMARTMONTOOLS_VERSION).version
+	$(DOCKER_RUN) env SMARTMONTOOLS_VERSION=$(SMARTMONTOOLS_VERSION) bash scripts/smartmontools-build.sh
+
+smartctl: $(OUT)/smartctl ## Build static smartctl $(SMARTMONTOOLS_VERSION)
+
+# Tailscale is not built: the official static mipsle release, checksum pinned,
+# stripped. It lives on the backup disk (make install-tailscale), not in flash.
+$(OUT)/tailscaled: $(STAMP)/builder.stamp $(STAMP)/tailscale-$(TAILSCALE_VERSION).version
+	@mkdir -p $(DL) $(OUT)
+	@test -f $(DL)/tailscale_$(TAILSCALE_VERSION)_mipsle.tgz || \
+		curl -fsSL -o $(DL)/tailscale_$(TAILSCALE_VERSION)_mipsle.tgz \
+		https://pkgs.tailscale.com/stable/tailscale_$(TAILSCALE_VERSION)_mipsle.tgz
+	echo "$(TAILSCALE_SHA256)  $(DL)/tailscale_$(TAILSCALE_VERSION)_mipsle.tgz" | shasum -a 256 -c -
+	tar xzf $(DL)/tailscale_$(TAILSCALE_VERSION)_mipsle.tgz -C $(OUT) --strip-components=1 \
+		tailscale_$(TAILSCALE_VERSION)_mipsle/tailscale tailscale_$(TAILSCALE_VERSION)_mipsle/tailscaled
+	$(DOCKER_RUN) bash -c 'CROSS=$$(cat /opt/cross-prefix); $$CROSS-strip /output/tailscale /output/tailscaled'
+	@ls -lh $(OUT)/tailscale $(OUT)/tailscaled
+
+tailscale: $(OUT)/tailscaled ## Fetch Tailscale $(TAILSCALE_VERSION) (static mipsle, sha256-checked, stripped)
 
 # (stamp file: macOS make 3.81 has no grouped targets for the two binaries)
 $(OUT)/.mtdutils.stamp: scripts/mtdutils-build.sh $(STAMP)/builder.stamp $(STAMP)/mtdutils-$(MTDUTILS_VERSION).version
@@ -217,6 +265,14 @@ flash-kernel: ## Flash build_output/vmlinuz to mtd4 over SSH, then reboot (CFE r
 	scp -O $(OUT)/vmlinuz root@$(DEVICE_IP):/dev/shm/vmlinuz
 	scp -O $(OUT)/flash_erase $(OUT)/nandwrite root@$(DEVICE_IP):/dev/shm/
 	$(SSH) 'cd /dev/shm && chmod +x flash_erase nandwrite && ./flash_erase /dev/mtd4 0 0 && ./nandwrite -p /dev/mtd4 vmlinuz && sync && reboot'
+
+# Tailscale lives on the backup disk (/srv/backup/system/tailscale): an
+# upgrade is a copy and a restart, no reflash. The supervisor loop in
+# /etc/init.d/backup restarts tailscaled within 5 s.
+install-tailscale: $(OUT)/tailscaled ## Copy Tailscale $(TAILSCALE_VERSION) to the backup disk and restart it
+	scp -O $(OUT)/tailscale root@$(DEVICE_IP):/srv/backup/system/tailscale/.new-tailscale
+	scp -O $(OUT)/tailscaled root@$(DEVICE_IP):/srv/backup/system/tailscale/.new-tailscaled
+	$(SSH) 'cd /srv/backup/system/tailscale && for b in tailscale tailscaled; do mv -f .new-$$b $$b; done; killall tailscaled; sleep 8; ./tailscale --socket=/var/run/tailscale/tailscaled.sock version'
 
 connect: ## Open the UART console (picocom, logs to logs/)
 	tools/airties.sh connect
