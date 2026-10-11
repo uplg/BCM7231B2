@@ -2,15 +2,20 @@
 
 Modern custom Linux for the AirTies AIR 7310T set-top box (Broadcom BCM7231B2),
 replacing the stock Wyplay firmware. Mainline kernel, fully static userland,
-Makefile-driven build, SSH-based iteration.
+Makefile-driven build, SSH-based iteration. Optionally an off-site **backup
+target**: a SATA disk, chrooted SFTP accounts and a Tailscale/Headscale node
+(see [Backup target](#backup-target)).
 
 ## Current stack
 
 | Component | Version |
 |-----------|---------|
-| Kernel | Linux mainline, flashed as self-decompressing `vmlinuz` (ZBOOT, ~3.3 MB — raw vmlinux outgrew the 7 MB mtd4 when WiFi landed) |
-| BusyBox | 1.38.x (static, ash) |
-| SSH | Dropbear 2026.x (Ed25519, ChaCha20-Poly1305, post-quantum hybrid KEX) |
+| Kernel | Linux 7.2.x mainline, flashed as self-decompressing `vmlinuz` (ZBOOT, ~3.4 MB — raw vmlinux outgrew the 7 MB mtd4 when WiFi landed) |
+| BusyBox | 1.38.x (static, ash; `ntpd` keeps the clock — the board has no RTC) |
+| SSH | Dropbear 2026.x, admin on port 22 (Ed25519, ChaCha20-Poly1305, post-quantum hybrid KEX) |
+| Backup SFTP | OpenSSH 10.x `sshd` on port 2222, built without OpenSSL (Ed25519 keys only): chrooted SFTP-only accounts, seccomp pre-auth sandbox |
+| Disk tools | e2fsprogs 1.47.x (`mke2fs`, `e2fsck`, `tune2fs`), smartmontools 7.x (`smartctl`) |
+| Tailnet | Tailscale (official static mipsle release, checksum-pinned, stripped), run from the backup disk |
 | Web | lighttpd 1.4.x (HTTP/2, TLS 1.3 via mbedTLS, static) |
 | WiFi | wpa_supplicant (static, nl80211 + internal TLS — WPA2-PSK) |
 | IR bridge | `kird` (static Rust, edition 2024): forwards Ruwido remote key events from the KIR driver to maison's `/api/ir/key` |
@@ -29,7 +34,7 @@ shared libraries. Versions are pinned in the `Makefile`.
 | **RAM** | 2×256 MB (~212 MB usable) |
 | **Flash** | 128 MB NAND (Toshiba TC58NVG0S3E), brcmnand-v5.0 controller |
 | **Ethernet** | bcmgenet (GENET v2.9), internal 100 Mbps PHY |
-| **SATA** | strict-ahci, 2 ports |
+| **SATA** | strict-ahci, 2 ports on the controller, one drive bay (2.5" fits) |
 | **USB** | 2× EHCI + 2× OHCI |
 | **UART** | 3× ns16550a, console on ttyS0 115200 8N1 |
 | **Bootloader** | CFE v3.11 (boots raw ELF from NAND) |
@@ -60,6 +65,7 @@ make all            # kernel + squashfs — everything flashable
 make kernel         # -> build_output/vmlinux        (incremental)
 make squashfs       # -> new_rootfs.squashfs         (rootfs + services)
 make busybox dropbear lighttpd mtdutils tools   # individual pieces
+make e2fsprogs openssh smartctl tailscale       # backup target pieces
 
 make kernel KERNEL_VERSION=6.18.39   # build another kernel version
 make kernel GENET_DEBUG=1            # re-enable GENET printk instrumentation
@@ -76,6 +82,9 @@ Personal files under `device/` (all gitignored, `.example` templates committed):
 - `device/kird.conf` — maison URL + `IR_API_TOKEN` machine token for the
   IR bridge (`/etc/init.d/kird` supervises the daemon)
 - `device/authorized_keys`, `device/dropbear/` — SSH material (see below)
+- `device/vykar/<host>.pub` — one public key per server backing up to the box:
+  each gets the account `vykar-<host>` (see [Backup target](#backup-target)).
+  No key, no backup role: the image stays a plain STB.
 
 ### kird — remote control bridge
 
@@ -102,7 +111,11 @@ The box carries its own `flash_erase`/`nandwrite` — no CFE needed:
 ```bash
 make squashfs flash-rootfs    # rebuild rootfs → flash mtd5 via SSH → reboot
 make kernel flash-kernel      # rebuild kernel → flash mtd4 via SSH → reboot
+make flash-rootfs DEVICE_IP=<wlan0 address>   # same over WiFi
 ```
+
+`/config` (mtd2) is untouched by both: the `/etc` and `/root` overlays, and
+the backup sshd's host key, survive reflashes.
 
 ### First flash / recovery (via CFE + TFTP)
 
@@ -127,7 +140,8 @@ Original firmware backups live in `backup/` (`mtd4_backup.bin`,
 
 ## Device network
 
-Static/fallback IP `192.168.2.1` (DHCP tried first). SSH port 22,
+Static/fallback IP `192.168.2.1` (DHCP tried first) on Ethernet, DHCP on
+`wlan0`. SSH port 22 (admin), backup SFTP port 2222 (backup role only),
 HTTP port 80, HTTPS port 443 (self-signed cert, cached in `build/tls/`).
 The web root serves a live status page (uptime, load, RAM, link state,
 throughput) backed by a JSON CGI at `/cgi-bin/status`.
@@ -149,6 +163,12 @@ minimal: no modules, no PCI, no debug — bcmgenet, brcmnand, AHCI, EHCI/OHCI,
 squashfs, devtmpfs). DTS in `kernel/bcm7231.dtsi` + board file; edit → `make
 kernel` (DTS is re-copied every build).
 
+For the backup target: `CONFIG_TUN` (Tailscale's `tailscale0`),
+`CONFIG_IP_ADVANCED_ROUTER` + `CONFIG_IP_MULTIPLE_TABLES` (its routing table
+and `ip rule`s; no netfilter, Tailscale runs with `--netfilter-mode=off`),
+`CONFIG_SECCOMP_FILTER` (OpenSSH's pre-auth sandbox; without it the seccomp
+build of `sshd-auth` drops every connection).
+
 Board-specific patches applied by `scripts/kbuild.sh` (idempotent, fail loudly
 if an anchor vanishes in a new kernel):
 
@@ -161,6 +181,53 @@ if an anchor vanishes in a new kernel):
 
 Vendor IRQ numbering is L1-bit + 1: subtract 1 when porting IRQs from the
 stock 3.3.8 kernel to the DTS (GENET 24/25, SATA 40, USB 68-71).
+
+## Backup target
+
+The box can hold off-site copies of remote servers' backups (written with
+[vykar](https://github.com/borgbase/vykar), encrypted client-side: the box
+only ever sees ciphertext). Pieces, all started by `/etc/init.d/backup`
+(backgrounded from `rcS`):
+
+- **Disk**: ext4 labelled `backup`, mounted on `/srv/backup` (`e2fsck -p`
+  first; exit code 4 or more leaves it unmounted for a human).
+- **Accounts**: `vykar-<host>` per `device/vykar/<host>.pub`, locked in
+  `/srv/backup/vykar-<host>` by OpenSSH (`ChrootDirectory`, `ForceCommand
+  internal-sftp -d /repo`, no shell, no forwarding), keys in
+  `/etc/ssh/vykar_authorized_keys/<account>` (`restrict`).
+- **Clock**: `/etc/init.d/ntp` waits for a first NTP sync before Tailscale
+  starts (TLS needs a real date).
+- **Tailnet**: `tailscaled` and its state live on the disk,
+  `/srv/backup/system/tailscale/` (kernel TUN when available, userspace
+  networking otherwise), supervised by a restart loop.
+- **SMART**: `/usr/sbin/disk-health` (cron, hourly) drops `smartctl -j` in
+  every chroot as `disk-health`, for the servers' monitoring to read over SFTP.
+
+### Setting it up
+
+```bash
+make e2fsprogs openssh smartctl tailscale kernel squashfs
+make flash-kernel flash-rootfs DEVICE_IP=<box>
+# once, on the box: format the disk (destroys it)
+ssh root@<box> 'mke2fs -t ext4 -L backup -m 0 -T largefile /dev/sda && reboot'
+# Tailscale onto the disk, then join the tailnet (on the box)
+make install-tailscale DEVICE_IP=<box>     # also: upgrades, no reflash
+/srv/backup/system/tailscale/tailscale --socket=/var/run/tailscale/tailscaled.sock \
+    up --login-server=<control server> --auth-key=file:<key file> \
+    --hostname=<name> --netfilter-mode=off --accept-dns=false
+```
+
+The servers then use `sftp://vykar-<host>@<tailnet address>:2222/repo`, with
+the box's `/etc/ssh/ssh_host_ed25519_key.pub` in their `known_hosts`.
+
+### Throughput
+
+About **0.7–1 MB/s** end to end, and the CPU is the limit: raw TCP over WiFi
+does ~15 MB/s, WireGuard alone ~1.15 MB/s (Tailscale's userspace
+wireguard-go, pure-Go ChaCha20-Poly1305 on a 594 MHz MIPS32 without crypto
+instructions, both cores busy), SSH on top roughly halves it. Plenty for
+nightly deduplicated deltas; a first full copy of a few GB takes an hour or
+two.
 
 ## Diagnostic tools (in /sbin on the box)
 
