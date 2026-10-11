@@ -52,7 +52,8 @@ sync sysctl syslogd tac tail tar tee telnetd test time
 top touch tr traceroute true tty udhcpc udhcpd umount uname
 uniq uptime usleep vi watch wc wget which
 who whoami xargs yes httpd crond crontab awk insmod rmmod lsmod
-logger logread clear basename dirname realpath pidof"
+logger logread clear basename dirname realpath pidof
+findfs blkid ntpd"
 
 cd "$NEWROOT/bin"
 for a in $APPLETS; do ln -sf busybox "$a" 2>/dev/null || true; done
