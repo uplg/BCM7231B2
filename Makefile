@@ -250,28 +250,29 @@ cfe-help: ## Print the CFE flash commands (first flash / recovery)
 	@echo ""
 
 # On-device reflash over SSH — the running custom firmware ships flash_erase +
-# nandwrite, so iteration doesn't need the CFE/TFTP dance. Kernel flash is
+# nandwrite, so iteration doesn't need the CFE/TFTP dance. scp runs in SFTP
+# mode (OpenSSH on the box has no scp binary, internal-sftp serves it). Kernel flash is
 # riskier (mtd4); CFE recovery always remains available.
 flash-rootfs: ## Flash new_rootfs.squashfs to mtd5 over SSH, then reboot
 	@test -f new_rootfs.squashfs || { echo "!! new_rootfs.squashfs missing — run: make squashfs"; exit 1; }
 	@echo ">>> Flashing rootfs (mtd5) on $(DEVICE_IP) in 3s — Ctrl+C to abort"; sleep 3
-	scp -O new_rootfs.squashfs root@$(DEVICE_IP):/dev/shm/new_rootfs.squashfs
-	scp -O $(OUT)/flash_erase $(OUT)/nandwrite root@$(DEVICE_IP):/dev/shm/
+	scp new_rootfs.squashfs root@$(DEVICE_IP):/dev/shm/new_rootfs.squashfs
+	scp $(OUT)/flash_erase $(OUT)/nandwrite root@$(DEVICE_IP):/dev/shm/
 	$(SSH) 'cd /dev/shm && chmod +x flash_erase nandwrite && ./flash_erase /dev/mtd5 0 0 && ./nandwrite -p /dev/mtd5 new_rootfs.squashfs && sync && reboot'
 
 flash-kernel: ## Flash build_output/vmlinuz to mtd4 over SSH, then reboot (CFE recovers if it fails)
 	@test -f $(OUT)/vmlinuz || { echo "!! $(OUT)/vmlinuz missing — run: make kernel"; exit 1; }
 	@echo ">>> Flashing KERNEL (mtd4) on $(DEVICE_IP) in 5s — Ctrl+C to abort"; sleep 5
-	scp -O $(OUT)/vmlinuz root@$(DEVICE_IP):/dev/shm/vmlinuz
-	scp -O $(OUT)/flash_erase $(OUT)/nandwrite root@$(DEVICE_IP):/dev/shm/
+	scp $(OUT)/vmlinuz root@$(DEVICE_IP):/dev/shm/vmlinuz
+	scp $(OUT)/flash_erase $(OUT)/nandwrite root@$(DEVICE_IP):/dev/shm/
 	$(SSH) 'cd /dev/shm && chmod +x flash_erase nandwrite && ./flash_erase /dev/mtd4 0 0 && ./nandwrite -p /dev/mtd4 vmlinuz && sync && reboot'
 
 # Tailscale lives on the backup disk (/srv/backup/system/tailscale): an
 # upgrade is a copy and a restart, no reflash. The supervisor loop in
 # /etc/init.d/backup restarts tailscaled within 5 s.
 install-tailscale: $(OUT)/tailscaled ## Copy Tailscale $(TAILSCALE_VERSION) to the backup disk and restart it
-	scp -O $(OUT)/tailscale root@$(DEVICE_IP):/srv/backup/system/tailscale/.new-tailscale
-	scp -O $(OUT)/tailscaled root@$(DEVICE_IP):/srv/backup/system/tailscale/.new-tailscaled
+	scp $(OUT)/tailscale root@$(DEVICE_IP):/srv/backup/system/tailscale/.new-tailscale
+	scp $(OUT)/tailscaled root@$(DEVICE_IP):/srv/backup/system/tailscale/.new-tailscaled
 	$(SSH) 'cd /srv/backup/system/tailscale && for b in tailscale tailscaled; do mv -f .new-$$b $$b; done; killall tailscaled; sleep 8; ./tailscale --socket=/var/run/tailscale/tailscaled.sock version'
 
 connect: ## Open the UART console (picocom, logs to logs/)

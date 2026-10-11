@@ -28,7 +28,14 @@ err()   { echo -e "${RED}[!]${NC} $1"; exit 1; }
 
 # --- Required inputs ---
 [ -f "$BUSYBOX" ]  || err "BusyBox not found: $BUSYBOX (run: make busybox)"
-[ -f "$DROPBEAR" ] || err "Dropbear not found: $DROPBEAR (run: make dropbear)"
+# SSH server: OpenSSH when built (make openssh), else Dropbear
+SSHD="$OUTDIR/sshd"
+if [ -f "$SSHD" ]; then
+    SSH_IMPL=openssh
+else
+    SSH_IMPL=dropbear
+    [ -f "$DROPBEAR" ] || err "No SSH server: run make openssh (or make dropbear)"
+fi
 
 # --- Clean tree ---
 rm -rf "$NEWROOT"
@@ -53,7 +60,7 @@ top touch tr traceroute true tty udhcpc udhcpd umount uname
 uniq uptime usleep vi watch wc wget which
 who whoami xargs yes httpd crond crontab awk insmod rmmod lsmod
 logger logread clear basename dirname realpath pidof
-findfs blkid ntpd"
+findfs blkid ntpd pgrep"
 
 cd "$NEWROOT/bin"
 for a in $APPLETS; do ln -sf busybox "$a" 2>/dev/null || true; done
@@ -76,21 +83,37 @@ cd "$NEWROOT/usr/sbin"
 for a in crond httpd telnetd udhcpd; do ln -sf ../../bin/busybox "$a" 2>/dev/null || true; done
 cd "$BASEDIR"
 
-# --- Dropbear ---
-info "Installing Dropbear SSH..."
-cp "$DROPBEAR" "$NEWROOT/usr/sbin/dropbearmulti"
-chmod 755 "$NEWROOT/usr/sbin/dropbearmulti"
-cd "$NEWROOT/usr/sbin"; ln -sf dropbearmulti dropbear; ln -sf dropbearmulti dropbearkey
-cd "$NEWROOT/usr/bin"; ln -sf ../sbin/dropbearmulti dbclient; ln -sf ../sbin/dropbearmulti ssh; ln -sf ../sbin/dropbearmulti scp
-cd "$BASEDIR"
-
-# --- SSH: authorized_keys (key auth) + runtime args for dropbear ---
+# --- SSH server ---
 mkdir -p "$NEWROOT/root/.ssh"; chmod 700 "$NEWROOT/root/.ssh"
-if [ -f "$BASEDIR/device/authorized_keys" ]; then
-    info "Installing SSH authorized_keys..."
-    cp "$BASEDIR/device/authorized_keys" "$NEWROOT/root/.ssh/authorized_keys"
+if [ "$SSH_IMPL" = openssh ]; then
+    # OpenSSH, built without OpenSSL: Ed25519 keys only. Root logs in with a
+    # key on port 22; the backup accounts (if any) use port 2222.
+    info "Installing OpenSSH..."
+    mkdir -p "$NEWROOT/usr/libexec" "$NEWROOT/etc/ssh"
+    cp "$SSHD" "$NEWROOT/usr/sbin/sshd"
+    cp "$OUTDIR/sshd-session" "$OUTDIR/sshd-auth" "$NEWROOT/usr/libexec/"
+    cp "$OUTDIR/ssh-keygen" "$NEWROOT/usr/bin/ssh-keygen"
+    chmod 755 "$NEWROOT/usr/sbin/sshd" "$NEWROOT"/usr/libexec/sshd-* "$NEWROOT/usr/bin/ssh-keygen"
+    # Key-only root: refuse to build an image nobody can log into
+    grep -E '^(ssh-ed25519|sk-ssh-ed25519@openssh.com) ' "$BASEDIR/device/authorized_keys" \
+        > "$NEWROOT/root/.ssh/authorized_keys" 2>/dev/null \
+        || err "device/authorized_keys has no ssh-ed25519 key (OpenSSH here takes no RSA/ECDSA)"
     chmod 600 "$NEWROOT/root/.ssh/authorized_keys"
+    info "  root keys: $(wc -l < "$NEWROOT/root/.ssh/authorized_keys") ed25519"
+else
+    info "Installing Dropbear SSH..."
+    cp "$DROPBEAR" "$NEWROOT/usr/sbin/dropbearmulti"
+    chmod 755 "$NEWROOT/usr/sbin/dropbearmulti"
+    cd "$NEWROOT/usr/sbin"; ln -sf dropbearmulti dropbear; ln -sf dropbearmulti dropbearkey
+    cd "$NEWROOT/usr/bin"; ln -sf ../sbin/dropbearmulti dbclient; ln -sf ../sbin/dropbearmulti ssh; ln -sf ../sbin/dropbearmulti scp
+    cd "$BASEDIR"
+    if [ -f "$BASEDIR/device/authorized_keys" ]; then
+        info "Installing SSH authorized_keys..."
+        cp "$BASEDIR/device/authorized_keys" "$NEWROOT/root/.ssh/authorized_keys"
+        chmod 600 "$NEWROOT/root/.ssh/authorized_keys"
+    fi
 fi
+if [ "$SSH_IMPL" = dropbear ]; then
 # Extra dropbear args, read by rcS at startup.
 # e.g. `make rootfs DROPBEAR_ARGS=-s` disables password auth (key-only) —
 # only do that once key login is confirmed working!
@@ -104,6 +127,7 @@ if [ -f "$BASEDIR/device/dropbear/dropbear_rsa_host_key" ]; then
     chmod 600 "$NEWROOT"/etc/dropbear/dropbear_*_host_key
 else
     warn "No device/dropbear/ host keys — the box will regenerate them each boot"
+fi
 fi
 
 # --- lighttpd: modern web server (HTTP/2, TLS 1.3 via mbedTLS) ---
@@ -214,13 +238,9 @@ if [ -f "$OUTDIR/smartctl" ]; then
 fi
 
 BACKUP_HOSTS=""
-if [ -f "$OUTDIR/sshd" ] && ls "$BASEDIR"/device/vykar/*.pub >/dev/null 2>&1; then
-    info "+ OpenSSH (backup accounts)"
-    mkdir -p "$NEWROOT/usr/libexec" "$NEWROOT/etc/ssh/vykar_authorized_keys"
-    cp "$OUTDIR/sshd" "$NEWROOT/usr/sbin/sshd"
-    cp "$OUTDIR/sshd-session" "$OUTDIR/sshd-auth" "$NEWROOT/usr/libexec/"
-    cp "$OUTDIR/ssh-keygen" "$NEWROOT/usr/bin/ssh-keygen"
-    chmod 755 "$NEWROOT/usr/sbin/sshd" "$NEWROOT"/usr/libexec/sshd-* "$NEWROOT/usr/bin/ssh-keygen"
+if [ "$SSH_IMPL" = openssh ] && ls "$BASEDIR"/device/vykar/*.pub >/dev/null 2>&1; then
+    info "+ backup accounts"
+    mkdir -p "$NEWROOT/etc/ssh/vykar_authorized_keys"
     for k in "$BASEDIR"/device/vykar/*.pub; do
         h=$(basename "$k" .pub)
         BACKUP_HOSTS="$BACKUP_HOSTS $h"
@@ -232,20 +252,34 @@ if [ -f "$OUTDIR/sshd" ] && ls "$BASEDIR"/device/vykar/*.pub >/dev/null 2>&1; th
     echo "$BACKUP_HOSTS" > "$NEWROOT/etc/ssh/backup_hosts"
     ACCOUNTS=$(for h in $BACKUP_HOSTS; do printf 'vykar-%s,' "$h"; done)
 
-    cat > "$NEWROOT/etc/ssh/sshd_config" << SSHDCONF
-# AirTies backup target — OpenSSH for the backup accounts only (Dropbear on
-# port 22 stays the admin SSH). Key only, SFTP only, each account locked in
-# its own chroot on the backup disk.
-Port 2222
+fi
+
+# sshd_config: root (port 22, key only) + the backup accounts (port 2222,
+# SFTP only, chrooted), each confined to its port.
+if [ "$SSH_IMPL" = openssh ]; then
+    {
+        echo "# AirTies — OpenSSH. Port 22: root, key only. Port 2222: backup accounts,"
+        echo "# key only, SFTP only, each locked in its chroot on the backup disk."
+        echo "Port 22"
+        [ -n "$BACKUP_HOSTS" ] && echo "Port 2222"
+        cat << SSHDCONF
 HostKey /etc/ssh/ssh_host_ed25519_key
 PidFile /var/run/sshd.pid
-PermitRootLogin no
+PermitRootLogin prohibit-password
 PasswordAuthentication no
 KbdInteractiveAuthentication no
-AllowGroups vykar
-AuthorizedKeysFile /etc/ssh/vykar_authorized_keys/%u
+AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/vykar_authorized_keys/%u
 StrictModes yes
 Subsystem sftp internal-sftp
+SSHDCONF
+        if [ -n "$BACKUP_HOSTS" ]; then
+            ACCOUNTS=$(for h in $BACKUP_HOSTS; do printf 'vykar-%s,' "$h"; done)
+            cat << SSHDCONF
+AllowGroups root vykar
+Match LocalPort 22
+    AllowGroups root
+Match LocalPort 2222
+    AllowGroups vykar
 Match User ${ACCOUNTS%,}
     ChrootDirectory /srv/backup/%u
     ForceCommand internal-sftp -d /repo
@@ -256,6 +290,10 @@ Match User ${ACCOUNTS%,}
     PermitTTY no
     PermitTunnel no
 SSHDCONF
+        else
+            echo "AllowGroups root"
+        fi
+    } > "$NEWROOT/etc/ssh/sshd_config"
 fi
 
 # --- Optional diagnostic tools (included only if built) ---
@@ -278,14 +316,23 @@ nobody:x:65534:65534:nobody:/nonexistent:/bin/false
 sshd:x:22:22:sshd:/var/run/sshd:/bin/false
 EOF
 
-# root password: blabliblou — hash verified against python crypt.crypt()
-# (the previous hash matched no known password and locked the box out)
-cat > "$NEWROOT/etc/shadow" << 'EOF'
-root:$6$AirTies$6WDkfDDo9bSei7k78mjFRZ/qi1HkKcgxfPr26wFzVBx/lt5pSJ4wbqxhpXyoGSBoHv1JvI9jBdC5ZHuuZ55EA1:0:0:99999:7:::
+# root password: random, generated on the first build into device/root-password
+# (gitignored, 0600) and reused after; only its SHA-512 crypt hash goes into
+# the image. SSH is key-only: the password is for the UART console.
+ROOTPW_FILE="$BASEDIR/device/root-password"
+if [ ! -s "$ROOTPW_FILE" ]; then
+    info "Generating the root password (device/root-password)..."
+    (umask 077; openssl rand -base64 32 | tr -d '/+=\n' | cut -c1-24 > "$ROOTPW_FILE")
+fi
+ROOTPW_HASH=$(openssl passwd -6 -stdin < "$ROOTPW_FILE" 2>/dev/null) \
+    || ROOTPW_HASH=$(docker run --rm -i --platform linux/amd64 airties-builder openssl passwd -6 -stdin < "$ROOTPW_FILE")
+case "$ROOTPW_HASH" in '$6$'*) ;; *) err "could not hash device/root-password" ;; esac
+cat > "$NEWROOT/etc/shadow" << SHADOW
+root:${ROOTPW_HASH}:0:0:99999:7:::
 daemon:x:1:1:daemon:/usr/sbin:/bin/false
 nobody:x:65534:65534:nobody:/nonexistent:/bin/false
 sshd:x:22:22:sshd:/var/run/sshd:/bin/false
-EOF
+SHADOW
 chmod 640 "$NEWROOT/etc/shadow"
 
 cat > "$NEWROOT/etc/group" << 'EOF'
@@ -457,25 +504,25 @@ if [ -e /dev/sda1 ]; then
     mount /dev/sda1 /mnt/usb 2>/dev/null && USB_MOUNT=/mnt/usb
 fi
 
-# Host keys: baked at image build, else generated into /etc/dropbear —
-# persistent when the /config overlay is up, volatile fallback otherwise.
-DBKEYDIR="/etc/dropbear"
-mkdir -p /var/run "$DBKEYDIR" 2>/dev/null
-if [ ! -f "$DBKEYDIR/dropbear_rsa_host_key" ]; then
-    if touch "$DBKEYDIR/.rw-test" 2>/dev/null; then
-        rm -f "$DBKEYDIR/.rw-test"
-        echo "[init] Generating persistent host keys..."
-    else
-        DBKEYDIR="/var/lib/dropbear"
-        mkdir -p "$DBKEYDIR"
-        echo "[init] No baked host keys — generating volatile ones..."
+# SSH: OpenSSH (/etc/init.d/sshd) when the image has it, else Dropbear
+if [ -x /etc/init.d/sshd ]; then
+    echo "[init] Starting SSH (OpenSSH)..."
+    /etc/init.d/sshd
+elif [ -x /usr/sbin/dropbear ]; then
+    # Host keys: baked at image build, else generated into /etc/dropbear —
+    # persistent when the /config overlay is up, volatile fallback otherwise.
+    DBKEYDIR="/etc/dropbear"
+    mkdir -p /var/run "$DBKEYDIR" 2>/dev/null
+    if [ ! -f "$DBKEYDIR/dropbear_rsa_host_key" ]; then
+        if touch "$DBKEYDIR/.rw-test" 2>/dev/null; then
+            rm -f "$DBKEYDIR/.rw-test"
+        else
+            DBKEYDIR="/var/lib/dropbear"; mkdir -p "$DBKEYDIR"
+        fi
+        /usr/sbin/dropbearkey -t rsa -f "$DBKEYDIR/dropbear_rsa_host_key" >/dev/null 2>&1
+        /usr/sbin/dropbearkey -t ed25519 -f "$DBKEYDIR/dropbear_ed25519_host_key" >/dev/null 2>&1
     fi
-    /usr/sbin/dropbearkey -t rsa -f "$DBKEYDIR/dropbear_rsa_host_key" >/dev/null 2>&1
-    /usr/sbin/dropbearkey -t ed25519 -f "$DBKEYDIR/dropbear_ed25519_host_key" >/dev/null 2>&1
-fi
-
-if [ -x /usr/sbin/dropbear ]; then
-    echo "[init] Starting SSH..."
+    echo "[init] Starting SSH (Dropbear)..."
     /usr/sbin/dropbear -r "$DBKEYDIR/dropbear_rsa_host_key" -r "$DBKEYDIR/dropbear_ed25519_host_key" \
         $(cat /etc/dropbear/args 2>/dev/null)
 fi
@@ -512,14 +559,16 @@ if [ -e /dev/sda1 ]; then
     mount /dev/sda1 /mnt/usb 2>/dev/null && USB_MOUNT=/mnt/usb
 fi
 
-DBKEYDIR="/etc/dropbear"
-if [ ! -f "$DBKEYDIR/dropbear_rsa_host_key" ]; then
-    DBKEYDIR="/var/lib/dropbear"
-    mkdir -p "$DBKEYDIR"
-    /usr/sbin/dropbearkey -t rsa -f "$DBKEYDIR/dropbear_rsa_host_key" >/dev/null 2>&1
-    /usr/sbin/dropbearkey -t ed25519 -f "$DBKEYDIR/dropbear_ed25519_host_key" >/dev/null 2>&1
-fi
-if [ -x /usr/sbin/dropbear ]; then
+if [ -x /etc/init.d/sshd ]; then
+    /etc/init.d/sshd
+elif [ -x /usr/sbin/dropbear ]; then
+    DBKEYDIR="/etc/dropbear"
+    if [ ! -f "$DBKEYDIR/dropbear_rsa_host_key" ]; then
+        DBKEYDIR="/var/lib/dropbear"
+        mkdir -p "$DBKEYDIR"
+        /usr/sbin/dropbearkey -t rsa -f "$DBKEYDIR/dropbear_rsa_host_key" >/dev/null 2>&1
+        /usr/sbin/dropbearkey -t ed25519 -f "$DBKEYDIR/dropbear_ed25519_host_key" >/dev/null 2>&1
+    fi
     /usr/sbin/dropbear -r "$DBKEYDIR/dropbear_rsa_host_key" -r "$DBKEYDIR/dropbear_ed25519_host_key" \
         $(cat /etc/dropbear/args 2>/dev/null)
 fi
@@ -551,8 +600,40 @@ PIDFILE=/var/run/udhcpc.wlan0.pid
 if [ ! -f "$PIDFILE" ] || ! kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
     udhcpc -i wlan0 -s /etc/network/udhcpc.script -b -p "$PIDFILE" >/dev/null 2>&1
 fi
+# Keep it up (one watcher, started here)
+W=/var/run/wifi-watch.pid
+if [ ! -f "$W" ] || ! kill -0 "$(cat "$W" 2>/dev/null)" 2>/dev/null; then
+    start-stop-daemon -S -b -m -p "$W" -x /usr/sbin/wifi-watch
+fi
 WIFISCRIPT
 chmod 755 "$NEWROOT/etc/init.d/wifi"
+
+cat > "$NEWROOT/usr/sbin/wifi-watch" << 'WATCHSCRIPT'
+#!/bin/sh
+# wlan0 is the only way in: when the gateway stops answering, restart WiFi
+# (3 min), then reboot cleanly (8 min: the dongle or its driver is gone).
+# The hardware watchdog only catches a hung kernel, not a dead link.
+fails=0
+while :; do
+    sleep 60
+    gw=$(ip route | awk '/^default/ && /wlan0/ {print $3; exit}')
+    if [ -n "$gw" ] && ping -c 2 -W 3 "$gw" >/dev/null 2>&1; then
+        [ "$fails" -gt 0 ] && logger -t wifi-watch "gateway $gw back after $fails min"
+        fails=0; continue
+    fi
+    fails=$((fails + 1))
+    logger -t wifi-watch "gateway ${gw:-none} unreachable ($fails min)"
+    case "$fails" in
+        3) logger -t wifi-watch "restarting WiFi"
+           killall wpa_supplicant udhcpc 2>/dev/null; rm -f /var/run/udhcpc.wlan0.pid
+           ifconfig wlan0 down 2>/dev/null; sleep 2
+           /etc/init.d/wifi ;;
+        8) logger -t wifi-watch "WiFi still down: rebooting"
+           sync; reboot ;;
+    esac
+done
+WATCHSCRIPT
+chmod 755 "$NEWROOT/usr/sbin/wifi-watch"
 
 cat > "$NEWROOT/etc/init.d/kird" << 'KIRDSCRIPT'
 #!/bin/sh
@@ -582,6 +663,20 @@ export KIRD_URL KIRD_TOKEN KIRD_DEVICE
 KIRDSCRIPT
 chmod 755 "$NEWROOT/etc/init.d/kird"
 
+if [ "$SSH_IMPL" = openssh ]; then
+cat > "$NEWROOT/etc/init.d/sshd" << 'SSHDSCRIPT'
+#!/bin/sh
+# OpenSSH: root on 22 (key only), backup accounts on 2222. Idempotent. The
+# host key lives on the persistent /etc overlay: same identity across
+# reboots and reflashes.
+[ -f /var/run/sshd.pid ] && kill -0 "$(cat /var/run/sshd.pid)" 2>/dev/null && exit 0
+[ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key
+mkdir -p /var/empty; chmod 755 /var/empty
+/usr/sbin/sshd -f /etc/ssh/sshd_config
+SSHDSCRIPT
+chmod 755 "$NEWROOT/etc/init.d/sshd"
+fi
+
 cat > "$NEWROOT/etc/init.d/ntp" << 'NTPSCRIPT'
 #!/bin/sh
 # Clock: no RTC on this board, it boots in 1970 (TLS certificates then look
@@ -603,7 +698,7 @@ cat > "$NEWROOT/etc/init.d/backup" << 'BACKUPSCRIPT'
 #!/bin/sh
 # Backup target: mounts the backup disk (ext4, label "backup") on
 # /srv/backup, then starts tailscaled (from the disk: upgraded without a
-# reflash), the backup sshd (port 2222) and the hourly SMART report.
+# reflash) and the hourly SMART report. sshd (rcS) serves the chroots.
 # Idempotent. Runs in the background from rcS (waits for disk and clock).
 D=/srv/backup   # mount point baked into the read-only rootfs
 if ! mountpoint -q "$D"; then
@@ -615,6 +710,17 @@ if ! mountpoint -q "$D"; then
     logger -t backup < /tmp/fsck.log
     [ "$rc" -ge 4 ] && { logger -t backup "e2fsck $DEV exit $rc: not mounting"; exit 1; }
     mount -t ext4 -o noatime "$DEV" "$D" || { logger -t backup "mount $DEV failed"; exit 1; }
+fi
+
+# Logs onto the disk from here on: a hang no longer takes them along (the
+# RAM buffer so far is kept, then syslogd writes the file; read it with
+# tail, logread has no buffer any more).
+L="$D/system/log"
+mkdir -p "$L"; chmod 700 "$D/system" "$L"
+if ! pgrep -f "syslogd -O $L" >/dev/null 2>&1; then
+    { echo "--- boot $(date -u '+%F %T') (RAM buffer before the disk) ---"; logread; } >> "$L/messages" 2>/dev/null
+    killall syslogd 2>/dev/null; sleep 1
+    syslogd -O "$L/messages" -s 2048 -b 5
 fi
 
 # Chroots: every component root-owned and not group/world-writable
@@ -642,13 +748,6 @@ if [ -x "$TS/tailscaled" ] && ! pidof tailscaled >/dev/null 2>&1; then
             sleep 5
         done
     ) </dev/null >/dev/null 2>&1 &
-fi
-
-# Backup sshd: host key on the persistent /etc overlay (survives reflashes)
-if [ -x /usr/sbin/sshd ] && [ ! -f /var/run/sshd.pid ]; then
-    [ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key
-    mkdir -p /var/empty; chmod 755 /var/empty
-    /usr/sbin/sshd -f /etc/ssh/sshd_config
 fi
 
 # Hourly SMART report into every chroot (read over SFTP by the servers)
@@ -682,7 +781,7 @@ fi
 cat > "$NEWROOT/etc/init.d/rcK" << 'STOPSCRIPT'
 #!/bin/sh
 echo "[shutdown] Stopping services..."
-killall sshd tailscaled crond ntpd 2>/dev/null
+killall wifi-watch sshd tailscaled crond ntpd 2>/dev/null
 killall dropbear httpd syslogd klogd wpa_supplicant udhcpc kird 2>/dev/null
 echo "[shutdown] Unmounting filesystems..."
 umount -a -r 2>/dev/null
@@ -734,7 +833,7 @@ state=$(cat /sys/class/net/eth0/operstate 2>/dev/null)
 speed=$(cat /sys/class/net/eth0/speed 2>/dev/null)
 rx=$(cat /sys/class/net/eth0/statistics/rx_bytes 2>/dev/null)
 tx=$(cat /sys/class/net/eth0/statistics/tx_bytes 2>/dev/null)
-ssh=false; [ -n "$(ps | grep '[d]ropbear')" ] && ssh=true
+ssh=false; [ -n "$(ps | grep -E '[d]ropbear|[s]shd: ')" ] && ssh=true
 procs=$(ls -d /proc/[0-9]* 2>/dev/null | wc -l)
 disk=null
 if mountpoint -q /mnt/usb 2>/dev/null; then

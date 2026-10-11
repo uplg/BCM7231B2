@@ -12,8 +12,7 @@ target**: a SATA disk, chrooted SFTP accounts and a Tailscale/Headscale node
 |-----------|---------|
 | Kernel | Linux 7.2.x mainline, flashed as self-decompressing `vmlinuz` (ZBOOT, ~3.4 MB — raw vmlinux outgrew the 7 MB mtd4 when WiFi landed) |
 | BusyBox | 1.38.x (static, ash; `ntpd` keeps the clock — the board has no RTC) |
-| SSH | Dropbear 2026.x, admin on port 22 (Ed25519, ChaCha20-Poly1305, post-quantum hybrid KEX) |
-| Backup SFTP | OpenSSH 10.x `sshd` on port 2222, built without OpenSSL (Ed25519 keys only): chrooted SFTP-only accounts, seccomp pre-auth sandbox |
+| SSH | OpenSSH 10.x, built without OpenSSL (Ed25519 keys only; ChaCha20-Poly1305, post-quantum mlkem/sntrup KEX), seccomp pre-auth sandbox. Port 22: root, key only. Port 2222: the chrooted SFTP-only backup accounts. Dropbear 2026.x remains the fallback when OpenSSH is not built |
 | Disk tools | e2fsprogs 1.47.x (`mke2fs`, `e2fsck`, `tune2fs`), smartmontools 7.x (`smartctl`) |
 | Tailnet | Tailscale (official static mipsle release, checksum-pinned, stripped), run from the backup disk |
 | Web | lighttpd 1.4.x (HTTP/2, TLS 1.3 via mbedTLS, static) |
@@ -34,7 +33,7 @@ shared libraries. Versions are pinned in the `Makefile`.
 | **RAM** | 2×256 MB (~212 MB usable) |
 | **Flash** | 128 MB NAND (Toshiba TC58NVG0S3E), brcmnand-v5.0 controller |
 | **Ethernet** | bcmgenet (GENET v2.9), internal 100 Mbps PHY |
-| **SATA** | strict-ahci, 2 ports on the controller, one drive bay (2.5" fits) |
+| **SATA** | strict-ahci, 2 ports on the controller, one drive bay (2.5" fits). The link fails 8b/10b decoding at 6 and 3 Gbps (BadCRC, Dispar): forced to 1.5 Gbps (`libata.force` in the DTS bootargs) |
 | **USB** | 2× EHCI + 2× OHCI |
 | **UART** | 3× ns16550a, console on ttyS0 115200 8N1 |
 | **Bootloader** | CFE v3.11 (boots raw ELF from NAND) |
@@ -81,7 +80,11 @@ Personal files under `device/` (all gitignored, `.example` templates committed):
   the `/config` overlay)
 - `device/kird.conf` — maison URL + `IR_API_TOKEN` machine token for the
   IR bridge (`/etc/init.d/kird` supervises the daemon)
-- `device/authorized_keys`, `device/dropbear/` — SSH material (see below)
+- `device/authorized_keys` — root's SSH keys (see below); `device/dropbear/` —
+  Dropbear host keys, only when Dropbear is the SSH server
+- `device/root-password` — root's password, generated on the first rootfs
+  build (24 random characters, 0600); only its SHA-512 hash goes into the
+  image. It is for the UART console: SSH takes keys only
 - `device/vykar/<host>.pub` — one public key per server backing up to the box:
   each gets the account `vykar-<host>` (see [Backup target](#backup-target)).
   No key, no backup role: the image stays a plain STB.
@@ -97,10 +100,12 @@ configurator, `/remote`). Unmapped keys land in maison's log and its
 
 ### SSH access
 
-`root` / password `blabliblou`, or key auth: `device/authorized_keys`
-(gitignored) is baked into `/root/.ssh/authorized_keys` at rootfs build.
-Key-only mode: `make squashfs DROPBEAR_ARGS=-s` — only after confirming
-key login works.
+Key only: `device/authorized_keys` (gitignored) is baked into
+`/root/.ssh/authorized_keys`. With OpenSSH (built without OpenSSL) only its
+`ssh-ed25519` lines are kept, and the build stops if there is none, so an
+image never locks you out. The host key (`/etc/ssh/ssh_host_ed25519_key`) is
+generated on first boot onto the persistent `/etc` overlay: same identity
+across reflashes. Console login (UART): root with `device/root-password`.
 
 ## Flash
 
@@ -113,6 +118,9 @@ make squashfs flash-rootfs    # rebuild rootfs → flash mtd5 via SSH → reboot
 make kernel flash-kernel      # rebuild kernel → flash mtd4 via SSH → reboot
 make flash-rootfs DEVICE_IP=<wlan0 address>   # same over WiFi
 ```
+
+The images travel with `scp` in SFTP mode (OpenSSH's `internal-sftp`; the
+box has no `scp` binary). From a box still on Dropbear, copy with `scp -O`.
 
 `/config` (mtd2) is untouched by both: the `/etc` and `/root` overlays, and
 the backup sshd's host key, survive reflashes.
@@ -202,6 +210,12 @@ only ever sees ciphertext). Pieces, all started by `/etc/init.d/backup`
   networking otherwise), supervised by a restart loop.
 - **SMART**: `/usr/sbin/disk-health` (cron, hourly) drops `smartctl -j` in
   every chroot as `disk-health`, for the servers' monitoring to read over SFTP.
+- **Logs**: once the disk is up, syslog goes to
+  `/srv/backup/system/log/messages` (5 × 2 MB, `tail` it: `logread` has no
+  buffer then), so a hang no longer takes the evidence with it.
+- **WiFi watch** (any box with WiFi): `/usr/sbin/wifi-watch` pings the
+  gateway every minute; 3 minutes without an answer restart WiFi, 8 reboot
+  cleanly. The hardware watchdog only catches a hung kernel, not a dead link.
 
 ### Setting it up
 
