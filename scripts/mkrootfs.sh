@@ -469,6 +469,13 @@ fi
 hostname AirTies
 ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
 
+# zram swap (64 MB, LZ4): a cushion for memory spikes, no flash wear
+if [ -e /sys/block/zram0 ]; then
+    echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null
+    echo 64M > /sys/block/zram0/disksize && mkswap /dev/zram0 >/dev/null && swapon -p 100 /dev/zram0 \
+        && echo "[init] zram swap: 64 MB"
+fi
+
 ifconfig eth0 up 2>/dev/null || true
 if command -v udhcpc >/dev/null 2>&1; then
     udhcpc -i eth0 -s /etc/network/udhcpc.script -n -q >/dev/null 2>&1 || true

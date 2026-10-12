@@ -175,7 +175,8 @@ For the backup target: `CONFIG_TUN` (Tailscale's `tailscale0`),
 `CONFIG_IP_ADVANCED_ROUTER` + `CONFIG_IP_MULTIPLE_TABLES` (its routing table
 and `ip rule`s; no netfilter, Tailscale runs with `--netfilter-mode=off`),
 `CONFIG_SECCOMP_FILTER` (OpenSSH's pre-auth sandbox; without it the seccomp
-build of `sshd-auth` drops every connection).
+build of `sshd-auth` drops every connection), `CONFIG_PREEMPT`, and zram
+swap (`CONFIG_BLK_DEV` + `CONFIG_ZRAM`, LZ4).
 
 Board-specific patches applied by `scripts/kbuild.sh` (idempotent, fail loudly
 if an anchor vanishes in a new kernel):
@@ -233,6 +234,23 @@ make install-tailscale DEVICE_IP=<box>     # also: upgrades, no reflash
 
 The servers then use `sftp://vykar-<host>@<tailnet address>:2222/repo`, with
 the box's `/etc/ssh/ssh_host_ed25519_key.pub` in their `known_hosts`.
+
+### Under sustained load
+
+The first full copies froze the box twice (2026-10-12); what it takes now:
+
+- SATA link forced to 1.5 Gbps (`libata.force`): 6 and 3 Gbps fail 8b/10b
+  decoding on this board.
+- `CONFIG_PREEMPT` + `rcutree.kthread_prio=10`: rtw88's USB TX work, network
+  softirqs and the WireGuard/SSH crypto had starved the RCU kthread for 48 s.
+- sshd reaps dropped sessions (`ClientAliveInterval 15`, `ClientAliveCountMax
+  4`) and caps connection bursts (`MaxStartups 4:50:10`); clients should use
+  one connection and long SFTP timeouts (vykar: `limits.connections: 1`,
+  `sftp_timeout: 120`), or they reconnect every few seconds on a busy box.
+- 64 MB of zram swap (LZ4) as a memory cushion; dirty data reaches the disk
+  within 2 s so logs survive a power cut.
+
+Ethernet instead of WiFi would remove the heaviest load (the USB dongle).
 
 ### Throughput
 
