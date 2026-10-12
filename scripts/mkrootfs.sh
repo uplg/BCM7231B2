@@ -271,6 +271,12 @@ KbdInteractiveAuthentication no
 AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/vykar_authorized_keys/%u
 StrictModes yes
 Subsystem sftp internal-sftp
+# Sessions a client dropped without closing are reaped within ~1 min, and a
+# burst of new connections cannot pile up (2026-10-12: vykar reconnecting
+# every ~8 s on timeouts, sessions never closed, the box froze).
+ClientAliveInterval 15
+ClientAliveCountMax 4
+MaxStartups 4:50:10
 SSHDCONF
         if [ -n "$BACKUP_HOSTS" ]; then
             ACCOUNTS=$(for h in $BACKUP_HOSTS; do printf 'vykar-%s,' "$h"; done)
