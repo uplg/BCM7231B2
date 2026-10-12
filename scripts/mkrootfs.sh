@@ -712,6 +712,11 @@ if ! mountpoint -q "$D"; then
     mount -t ext4 -o noatime "$DEV" "$D" || { logger -t backup "mount $DEV failed"; exit 1; }
 fi
 
+# Dirty data reaches the disk within ~2 s (default: up to 30 s): after a
+# freeze and a power cut, the log file kept its size but its last 174 lines
+# were zeros (2026-10-12).
+sysctl -w vm.dirty_writeback_centisecs=100 vm.dirty_expire_centisecs=200 >/dev/null
+
 # Logs onto the disk from here on: a hang no longer takes them along (the
 # RAM buffer so far is kept, then syslogd writes the file; read it with
 # tail, logread has no buffer any more).
