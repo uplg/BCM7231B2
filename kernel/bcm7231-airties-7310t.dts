@@ -27,8 +27,10 @@
 	chosen {
 		/* libata.force: the SATA link fails 8b/10b decoding (BadCRC, Dispar)
 		 * at 6 and 3 Gbps on this board; 1.5 Gbps is stable and still beyond
-		 * what a hard disk streams. */
-		bootargs = "console=ttyS0,115200 root=/dev/mtdblock5 rootfstype=squashfs ro init=/sbin/init libata.force=1.5Gbps";
+		 * what a hard disk streams.
+		 * rcutree.kthread_prio: RCU kthreads run SCHED_FIFO, so a CPU-bound
+		 * network load cannot starve them (48 s stall, box frozen). */
+		bootargs = "console=ttyS0,115200 root=/dev/mtdblock5 rootfstype=squashfs ro init=/sbin/init libata.force=1.5Gbps rcutree.kthread_prio=10";
 		stdout-path = &uart0;
 	};
 };
