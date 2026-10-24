@@ -22,12 +22,13 @@ RUN apt-get update -qq \
         squashfs-tools \
     && rm -rf /var/lib/apt/lists/*
 
-# Bootlin mips32el--musl--stable-2024.05-1 — targets MIPS32 Release 1 only,
+# Bootlin mips32el--musl--stable-2026.08-1 (gcc 15.3, binutils 2.45.1, musl 1.2.6) — targets MIPS32 Release 1 only,
 # which is all the BMIPS4380 supports. Static musl, zero shared-lib deps.
-RUN wget -q https://toolchains.bootlin.com/downloads/releases/toolchains/mips32el/tarballs/mips32el--musl--stable-2024.05-1.tar.xz -O /tmp/tc.tar.xz \
+RUN wget -q https://toolchains.bootlin.com/downloads/releases/toolchains/mips32el/tarballs/mips32el--musl--stable-2026.08-1.tar.xz -O /tmp/tc.tar.xz \
+    && echo "e8517d51ba86699d5efaac62fc50fd9267dbdbc8b2cd3eb5b658db3582286778  /tmp/tc.tar.xz" | sha256sum -c - \
     && mkdir -p /opt \
     && tar xf /tmp/tc.tar.xz -C /opt \
-    && mv /opt/mips32el--musl--stable-2024.05-1 /opt/toolchain \
+    && mv /opt/mips32el--musl--stable-2026.08-1 /opt/toolchain \
     && rm /tmp/tc.tar.xz
 
 ENV PATH=/opt/toolchain/bin:$PATH
@@ -38,9 +39,10 @@ RUN CROSS=$(ls /opt/toolchain/bin/*-gcc | head -1 | sed 's/-gcc$//' | xargs base
     && echo "$CROSS" > /opt/cross-prefix \
     && echo "Cross prefix: $CROSS"
 
-# CMake for lighttpd (its release tarballs no longer ship autotools configure).
+# CMake for lighttpd (its release tarballs no longer ship autotools configure),
+# pkg-config for libnl (3.12's configure requires it).
 # Kept as a separate late layer so adding it doesn't invalidate the toolchain cache.
-RUN apt-get update -qq && apt-get install -y -qq cmake && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -qq && apt-get install -y -qq cmake pkg-config && rm -rf /var/lib/apt/lists/*
 
 # Rust nightly + rust-src for the kird daemon: mipsel-unknown-linux-musl is
 # Tier 3 (no prebuilt std) AND defaults to MIPS32 R2, so kird builds std from
@@ -49,7 +51,7 @@ RUN apt-get update -qq && apt-get install -y -qq cmake && rm -rf /var/lib/apt/li
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
 RUN wget -qO /tmp/rustup-init https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-gnu/rustup-init \
     && chmod +x /tmp/rustup-init \
-    && /tmp/rustup-init -y --profile minimal --default-toolchain nightly-2026-08-01 \
+    && /tmp/rustup-init -y --profile minimal --default-toolchain nightly-2026-10-23 \
         --component rust-src \
     && rm /tmp/rustup-init
 ENV PATH=/opt/cargo/bin:$PATH

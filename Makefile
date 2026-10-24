@@ -10,26 +10,26 @@
 #   make kernel KERNEL_VERSION=7.1.4   — try another kernel
 # =============================================================================
 
-KERNEL_VERSION   ?= 7.2.10
+KERNEL_VERSION   ?= 7.3
 # GENET_DEBUG=1 re-enables the bcmgenet printk instrumentation
 # (kernel/patch_bcmgenet_debug.py). Off by default since the IRQ
 # off-by-one root cause was fixed in the DTS.
 GENET_DEBUG      ?= 0
 BUSYBOX_VERSION  ?= 1.38.0
-DROPBEAR_VERSION ?= 2026.92
-MTDUTILS_VERSION ?= 2.1.2
+DROPBEAR_VERSION ?= 2026.94
+MTDUTILS_VERSION ?= 2.3.1
 LIGHTTPD_VERSION ?= 1.4.85
 MBEDTLS_VERSION  ?= 3.6.7
-WPA_VERSION      ?= 2.11
-LIBNL_VERSION    ?= 3.11.0
+WPA_VERSION      ?= 2.12
+LIBNL_VERSION    ?= 3.12.0
 # Backup target (backup-home): ext4 tools, chroot SFTP, SMART, tailnet
 E2FSPROGS_VERSION     ?= 1.47.4
 OPENSSH_VERSION       ?= 10.6p1
 ZLIB_VERSION          ?= 1.3.2
 SMARTMONTOOLS_VERSION ?= 7.5
 # Official static mipsle build; sha256 from pkgs.tailscale.com (<tgz>.sha256)
-TAILSCALE_VERSION     ?= 1.104.1
-TAILSCALE_SHA256      ?= 6ad1f6c2d26f54f61312303ae9d2bad7a71b505b83ffc08cd77ed7f89875b3ac
+TAILSCALE_VERSION     ?= 1.104.2
+TAILSCALE_SHA256      ?= 5398e14b280711f1139e1c2ad84f405a08bcce58a512c155fb139aea3eeea3ee
 
 BUILDER_IMAGE ?= airties-builder
 KBUILD_VOLUME ?= airties-kbuild

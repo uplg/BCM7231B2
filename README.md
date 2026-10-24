@@ -10,7 +10,7 @@ target**: a SATA disk, chrooted SFTP accounts and a Tailscale/Headscale node
 
 | Component | Version |
 |-----------|---------|
-| Kernel | Linux 7.2.x mainline, flashed as self-decompressing `vmlinuz` (ZBOOT, ~3.4 MB — raw vmlinux outgrew the 7 MB mtd4 when WiFi landed) |
+| Kernel | Linux 7.3 mainline, flashed as self-decompressing `vmlinuz` (ZBOOT, ~3.4 MB — raw vmlinux outgrew the 7 MB mtd4 when WiFi landed) |
 | BusyBox | 1.38.x (static, ash; `ntpd` keeps the clock — the board has no RTC) |
 | SSH | OpenSSH 10.x, built without OpenSSL (Ed25519 keys only; ChaCha20-Poly1305, post-quantum mlkem/sntrup KEX), seccomp pre-auth sandbox. Port 22: root, key only. Port 2222: the chrooted SFTP-only backup accounts. Dropbear 2026.x remains the fallback when OpenSSH is not built |
 | Disk tools | e2fsprogs 1.47.x (`mke2fs`, `e2fsck`, `tune2fs`), smartmontools 7.x (`smartctl`) |
