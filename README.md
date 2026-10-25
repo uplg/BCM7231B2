@@ -3,8 +3,8 @@
 Modern custom Linux for the AirTies AIR 7310T set-top box (Broadcom BCM7231B2),
 replacing the stock Wyplay firmware. Mainline kernel, fully static userland,
 Makefile-driven build, SSH-based iteration. Optionally an off-site **backup
-target**: a SATA disk, chrooted SFTP accounts and a Tailscale/Headscale node
-(see [Backup target](#backup-target)).
+target**: a SATA disk and chrooted SFTP accounts, reached through a subnet
+route on a tailnet node of the LAN (see [Backup target](#backup-target)).
 
 ## Current stack
 
@@ -14,7 +14,6 @@ target**: a SATA disk, chrooted SFTP accounts and a Tailscale/Headscale node
 | BusyBox | 1.38.x (static, ash; `ntpd` keeps the clock — the board has no RTC) |
 | SSH | OpenSSH 10.x, built without OpenSSL (Ed25519 keys only; ChaCha20-Poly1305, post-quantum mlkem/sntrup KEX), seccomp pre-auth sandbox. Port 22: root, key only. Port 2222: the chrooted SFTP-only backup accounts. Dropbear 2026.x remains the fallback when OpenSSH is not built |
 | Disk tools | e2fsprogs 1.47.x (`mke2fs`, `e2fsck`, `tune2fs`), smartmontools 7.x (`smartctl`) |
-| Tailnet | Tailscale (official static mipsle release, checksum-pinned, stripped), run from the backup disk |
 | Web | lighttpd 1.4.x (HTTP/2, TLS 1.3 via mbedTLS, static) |
 | WiFi | wpa_supplicant (static, nl80211 + internal TLS — WPA2-PSK) |
 | IR bridge | `kird` (static Rust, edition 2024): forwards Ruwido remote key events from the KIR driver to maison's `/api/ir/key` |
@@ -65,7 +64,7 @@ make kernel         # -> build_output/vmlinux        (incremental)
 make squashfs       # -> new_rootfs.squashfs         (rootfs + services)
 make ubi            # -> rootfs.ubifs, rootfs.ubi    (UBIFS rootfs; whole-mtd5 UBI image)
 make busybox dropbear lighttpd mtdutils tools   # individual pieces
-make e2fsprogs openssh smartctl tailscale       # backup target pieces
+make e2fsprogs openssh smartctl                 # backup target pieces
 
 make kernel KERNEL_VERSION=6.18.39   # build another kernel version
 make kernel GENET_DEBUG=1            # re-enable GENET printk instrumentation
@@ -183,10 +182,7 @@ minimal: no modules, no PCI, no debug — bcmgenet, brcmnand, AHCI, EHCI/OHCI,
 squashfs, devtmpfs). DTS in `kernel/bcm7231.dtsi` + board file; edit → `make
 kernel` (DTS is re-copied every build).
 
-For the backup target: `CONFIG_TUN` (Tailscale's `tailscale0`),
-`CONFIG_IP_ADVANCED_ROUTER` + `CONFIG_IP_MULTIPLE_TABLES` (its routing table
-and `ip rule`s; no netfilter, Tailscale runs with `--netfilter-mode=off`),
-`CONFIG_SECCOMP_FILTER` (OpenSSH's pre-auth sandbox; without it the seccomp
+For the backup target: `CONFIG_SECCOMP_FILTER` (OpenSSH's pre-auth sandbox; without it the seccomp
 build of `sshd-auth` drops every connection), `CONFIG_PREEMPT`, and zram
 swap (`CONFIG_BLK_DEV` + `CONFIG_ZRAM`, LZ4).
 
@@ -216,11 +212,12 @@ only ever sees ciphertext). Pieces, all started by `/etc/init.d/backup`
   `/srv/backup/vykar-<host>` by OpenSSH (`ChrootDirectory`, `ForceCommand
   internal-sftp -d /repo`, no shell, no forwarding), keys in
   `/etc/ssh/vykar_authorized_keys/<account>` (`restrict`).
-- **Clock**: `/etc/init.d/ntp` waits for a first NTP sync before Tailscale
-  starts (TLS needs a real date).
-- **Tailnet**: `tailscaled` and its state live on the disk,
-  `/srv/backup/system/tailscale/` (kernel TUN when available, userspace
-  networking otherwise), supervised by a restart loop.
+- **Clock**: `/etc/init.d/ntp` (from rcS, whatever the disk does) waits for a
+  first NTP sync; the SMART report waits for it (it carries its time).
+- **Network path**: no tailnet node on the box. A tailnet node of the LAN
+  advertises the box's address as a subnet route (`<box LAN address>/32`);
+  the servers accept it and reach port 2222 through it.
+  WireGuard ends on that node, SFTP stays end to end.
 - **SMART**: `/usr/sbin/disk-health` (cron, hourly) drops `smartctl -j` in
   every chroot as `disk-health`, for the servers' monitoring to read over SFTP.
 - **Logs**: once the disk is up, syslog goes to
@@ -233,18 +230,18 @@ only ever sees ciphertext). Pieces, all started by `/etc/init.d/backup`
 ### Setting it up
 
 ```bash
-make e2fsprogs openssh smartctl tailscale kernel squashfs
+make e2fsprogs openssh smartctl kernel ubi
 make flash-kernel flash-rootfs DEVICE_IP=<box>
 # once, on the box: format the disk (destroys it)
 ssh root@<box> 'mke2fs -t ext4 -L backup -m 0 -T largefile /dev/sda && reboot'
-# Tailscale onto the disk, then join the tailnet (on the box)
-make install-tailscale DEVICE_IP=<box>     # also: upgrades, no reflash
-/srv/backup/system/tailscale/tailscale --socket=/var/run/tailscale/tailscaled.sock \
-    up --login-server=<control server> --auth-key=file:<key file> \
-    --hostname=<name> --netfilter-mode=off --accept-dns=false
+# on a tailnet node of the LAN: route the box's address (approve it in the
+# control server, or auto-approve it in its policy)
+tailscale set --advertise-routes=<box LAN address>/32
+# on each server: take the route
+tailscale set --accept-routes
 ```
 
-The servers then use `sftp://vykar-<host>@<tailnet address>:2222/repo`, with
+The servers then use `sftp://vykar-<host>@<box LAN address>:2222/repo`, with
 the box's `/etc/ssh/ssh_host_ed25519_key.pub` in their `known_hosts`.
 
 ### Under sustained load
@@ -266,12 +263,13 @@ Ethernet instead of WiFi would remove the heaviest load (the USB dongle).
 
 ### Throughput
 
-About **0.7–1 MB/s** end to end, and the CPU is the limit: raw TCP over WiFi
-does ~15 MB/s, WireGuard alone ~1.15 MB/s (Tailscale's userspace
-wireguard-go, pure-Go ChaCha20-Poly1305 on a 594 MHz MIPS32 without crypto
-instructions, both cores busy), SSH on top roughly halves it. Plenty for
-nightly deduplicated deltas; a first full copy of a few GB takes an hour or
-two.
+About **6 MB/s** end to end from a remote server (measured 2026-10-25),
+the box's CPU still the limit: raw TCP over WiFi does ~15 MB/s, SFTP (OpenSSH
+ChaCha20-Poly1305 on a 594 MHz MIPS32) ~10 MB/s on the LAN. When the box ran
+its own tailnet node it did 0.7-1 MB/s: Tailscale's userspace wireguard-go
+(pure-Go ChaCha20-Poly1305, no crypto instructions) took 1.5 of its 2 cores
+for 1.1 MB/s, before SSH. WireGuard now ends on the LAN node that routes the
+box's address.
 
 ## Diagnostic tools (in /sbin on the box)
 

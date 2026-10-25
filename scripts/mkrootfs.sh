@@ -556,7 +556,7 @@ step wifi
 step kird
 [ -x /etc/init.d/kird ] && /etc/init.d/kird </dev/null >/dev/null 2>&1
 # The clock, whatever the disk does (it was set from the backup script only: a disk that failed
-# its check left the box in 1970, its TLS refused); then the backup target (disk, tailnet, SFTP)
+# its check left the box in 1970, its TLS refused); then the backup target (disk, SFTP, SMART)
 step "ntp, backup"
 /etc/init.d/ntp </dev/null >/dev/null 2>&1 &
 [ -x /etc/init.d/backup ] && /etc/init.d/backup </dev/null >/dev/null 2>&1 &
@@ -778,8 +778,9 @@ if [ -n "$BACKUP_HOSTS" ]; then
 cat > "$NEWROOT/etc/init.d/backup" << 'BACKUPSCRIPT'
 #!/bin/sh
 # Backup target: mounts the backup disk (ext4, label "backup") on
-# /srv/backup, then starts tailscaled (from the disk: upgraded without a
-# reflash) and the hourly SMART report. sshd (rcS) serves the chroots.
+# /srv/backup, then starts the hourly SMART report. sshd (rcS) serves the
+# chroots; the servers reach it through a subnet route on a tailnet node of
+# the LAN (the box runs none: its CPU spent 1.5 cores on wireguard-go).
 # Idempotent. Runs in the background from rcS (waits for disk and clock).
 D=/srv/backup   # mount point baked into the read-only rootfs
 if ! mountpoint -q "$D"; then
@@ -827,27 +828,10 @@ for h in $(cat /etc/ssh/backup_hosts); do
     chown "vykar-$h:vykar" "$D/vykar-$h/repo"; chmod 700 "$D/vykar-$h/repo"
 done
 
-# Clock first: Headscale's TLS needs it (/etc/init.d/ntp, from rcS, marks it set)
+# Clock first: the SMART report carries its time, the servers judge its age
+# (/etc/init.d/ntp, from rcS, marks it set)
 n=0
 while [ ! -e /var/run/clock-set ] && [ "$n" -lt 300 ]; do sleep 1; n=$((n + 1)); done
-
-# tailscaled: kernel TUN when built in, else userspace networking
-TS="$D/system/tailscale"
-if [ -x "$TS/tailscaled" ] && ! pidof tailscaled >/dev/null 2>&1; then
-    mkdir -p /var/run/tailscale
-    TUN="--tun=userspace-networking"
-    [ -c /dev/net/tun ] && TUN="--tun=tailscale0"
-    (
-        while :; do
-            # nftables is what the kernel has: say so, rather than let it probe iptables first
-            TS_DEBUG_FIREWALL_MODE=nftables \
-            "$TS/tailscaled" $TUN --state="$TS/tailscaled.state" --statedir="$TS" \
-                --socket=/var/run/tailscale/tailscaled.sock --port=41641 2>&1 \
-                | logger -t tailscaled
-            sleep 5
-        done
-    ) </dev/null >/dev/null 2>&1 &
-fi
 
 # Hourly SMART report into every chroot (read over SFTP by the servers)
 mkdir -p /var/spool/cron/crontabs
@@ -883,7 +867,7 @@ fi
 cat > "$NEWROOT/etc/init.d/rcK" << 'STOPSCRIPT'
 #!/bin/sh
 echo "[shutdown] Stopping services..."
-killall wifi-watch sshd tailscaled crond ntpd 2>/dev/null
+killall wifi-watch sshd crond ntpd 2>/dev/null
 killall dropbear httpd syslogd klogd wpa_supplicant udhcpc kird 2>/dev/null
 echo "[shutdown] Unmounting filesystems..."
 umount -a -r 2>/dev/null
