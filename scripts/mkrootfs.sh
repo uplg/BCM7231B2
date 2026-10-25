@@ -607,14 +607,9 @@ fi
 
 touch /var/run/rcS.done
 step done
-echo ""
-echo "============================================"
-echo "  AirTies ready"
-echo "  IP: ${IP_ADDR:-192.168.2.1}"
-echo "  SSH:   port 22"
-echo "  HTTP:  port 80 / HTTPS: port 443"
-echo "============================================"
-echo ""
+# The box's state, at getty's login prompt and SSH logins (rewritten as it changes: the DHCP
+# lease, the clock, the disk)
+/usr/sbin/status-banner
 INITSCRIPT
 chmod 755 "$NEWROOT/etc/init.d/rcS"
 
@@ -768,6 +763,7 @@ until ntpd -n -q $PEERS >/dev/null 2>&1; do
 done
 logger -t ntp "clock: $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
 touch /var/run/clock-set
+/usr/sbin/status-banner
 # the web server, once the clock is right (see rcS)
 pidof lighttpd >/dev/null 2>&1 || { [ -x /usr/sbin/lighttpd ] && /usr/sbin/lighttpd -f /etc/lighttpd/lighttpd.conf; }
 ntpd $PEERS
@@ -803,6 +799,8 @@ if ! mountpoint -q "$D"; then
     [ "$rc" -ge 4 ] && { logger -t backup "e2fsck $DEV exit $rc: not mounting"; exit 1; }
     mount -t ext4 -o noatime "$DEV" "$D" || { logger -t backup "mount $DEV failed"; exit 1; }
 fi
+
+/usr/sbin/status-banner   # the disk is up
 
 # Dirty data reaches the disk within ~2 s (default: up to 30 s): after a
 # freeze and a power cut, the log file kept its size but its last 174 lines
@@ -876,6 +874,54 @@ echo "[shutdown] System halted."
 STOPSCRIPT
 chmod 755 "$NEWROOT/etc/init.d/rcK"
 
+# --- Status banner: /etc/issue (serial login prompt) and /etc/motd (SSH logins) ---
+# Written in RAM (/var/run/issue) whenever the state changes, never in flash.
+FIRMWARE=$(git -C "$BASEDIR" describe --always --dirty 2>/dev/null || echo unknown)
+printf 'FIRMWARE=%s\nBUILT=%s\n' "$FIRMWARE" "$(date -u +%Y-%m-%d)" > "$NEWROOT/etc/firmware-release"
+ln -sf /var/run/issue "$NEWROOT/etc/issue"
+ln -sf /var/run/issue "$NEWROOT/etc/motd"
+cat > "$NEWROOT/usr/sbin/status-banner" << 'BANNERSCRIPT'
+#!/bin/sh
+# The box at a glance (/var/run/issue, behind /etc/issue and /etc/motd): run at the end of the
+# boot, on a DHCP lease, once the clock is set and once the backup disk is mounted.
+. /etc/firmware-release
+model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)
+role=""; [ -x /etc/init.d/backup ] && role=" · off-site backup target"
+ip4() { ip -4 -o addr show "$1" 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}'; }
+net=""
+for i in wlan0 eth0; do
+    # a live link only: eth0 keeps its fallback address with no cable plugged in
+    [ "$(cat /sys/class/net/$i/carrier 2>/dev/null)" = 1 ] || continue
+    a=$(ip4 "$i"); [ -n "$a" ] || continue
+    band=""
+    if [ "$i" = wlan0 ]; then
+        f=$(wpa_cli -i wlan0 status 2>/dev/null | sed -n 's/^freq=//p')
+        [ -n "$f" ] && band=" ($([ "$f" -gt 4000 ] && echo 5 || echo 2.4) GHz)"
+    fi
+    net="${net:+$net · }$i $a$band"
+done
+backup="not mounted"
+if mountpoint -q /srv/backup; then
+    backup=$(df -k /srv/backup | awk 'NR == 2 {printf "%d %% of %.0f GiB used", $5, $2 / 1048576}')
+    dev=$(awk '$2 == "/srv/backup" {print $1}' /proc/mounts)
+    smartctl -H "$dev" 2>/dev/null | grep -q PASSED && backup="$backup · SMART ok"
+fi
+mem=$(awk '/^MemTotal/ {t = $2} /^MemAvailable/ {a = $2} END {printf "%d MB free of %d", a / 1024, t / 1024}' /proc/meminfo)
+since=""
+[ "$(date +%Y)" -ge 2026 ] && since=" · up since $(date -u -d @$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) )) '+%Y-%m-%d %H:%M') UTC"
+{
+    echo
+    echo "  $model$role"
+    echo "  ──────────────────────────────────────────────────────"
+    echo "  firmware  $FIRMWARE ($BUILT) · Linux $(uname -r)"
+    echo "  network   ${net:-none yet}"
+    [ -x /etc/init.d/backup ] && echo "  backup    $backup"
+    echo "  system    $mem$since"
+    echo
+} > /var/run/issue.tmp && mv /var/run/issue.tmp /var/run/issue
+BANNERSCRIPT
+chmod 755 "$NEWROOT/usr/sbin/status-banner"
+
 cat > "$NEWROOT/etc/network/udhcpc.script" << 'DHCPSCRIPT'
 #!/bin/sh
 case "$1" in
@@ -893,6 +939,7 @@ case "$1" in
             for i in $dns; do echo "nameserver $i" >> /etc/resolv.conf; done
         fi
         [ -n "$hostname" ] && hostname "$hostname"
+        /usr/sbin/status-banner
         ;;
 esac
 DHCPSCRIPT
