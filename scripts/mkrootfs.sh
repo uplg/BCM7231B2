@@ -487,9 +487,20 @@ if [ "$(head -c 4 /dev/mtd2)" != "UBI#" ]; then
         ubiformat /dev/mtd2 -y -q    # blank, or the vendor's ConfigFS (backup/mtd2_backup.bin)
     fi
 fi
-if [ "$(head -c 4 /dev/mtd2)" = "UBI#" ] && ubiattach -m 2 -d 1 >/dev/null; then
+# -b 6: keep 6 PEBs for bad blocks. UBI's default reserves 20 per 1024 PEBs of the whole chip, for
+# each device: 20 of mtd2's 48, which left /config 916 KB (504 KB free, kird alone is 593 KB).
+if [ "$(head -c 4 /dev/mtd2)" = "UBI#" ] && ubiattach -m 2 -d 1 -b 6 >/dev/null; then
     [ -e /dev/ubi1_0 ] || ubimkvol /dev/ubi1 -N config -m >/dev/null
     mount -t ubifs ubi1:config /config
+fi
+# Once, after that reserve shrank: UBIFS fixed its size when made, so the volume is remade at the
+# full size and the files put back (kept in RAM meanwhile)
+if grep -q ' /config ' /proc/mounts && [ "$(cat /sys/class/ubi/ubi1/avail_eraseblocks)" -gt 0 ]; then
+    echo "[init] /config: growing to the free space (once)..."
+    tar -C /config -cf /dev/shm/config.tar . && umount /config && ubirmvol /dev/ubi1 -N config \
+        && ubimkvol /dev/ubi1 -N config -m >/dev/null && mount -t ubifs ubi1:config /config \
+        && tar -C /config -xf /dev/shm/config.tar && sync && echo "[init] /config: grown"
+    rm -f /dev/shm/config.tar
 fi
 if [ -e /dev/shm/config.kept ] && grep -q ' /config ' /proc/mounts; then
     tar -C /config -xf /dev/shm/config.tar && sync && echo "[init] /config: moved to UBIFS"
@@ -655,6 +666,11 @@ while [ ! -d /sys/class/net/wlan0 ] && [ "$n" -lt 20 ]; do usleep 500000; n=$((n
 [ -d /sys/class/net/wlan0 ] || { logger -t wifi "no wlan0 (dongle absent?)"; exit 1; }
 
 ifconfig wlan0 up 2>/dev/null || true
+# RPS: the IP/TCP half of the receive path runs on CPU1. Everything else of it (EHCI interrupt,
+# USB completion, rtw88, mac80211) is tied to CPU0, which took the whole of it (TASKLET 50919 vs
+# 4) and starved under the backups' load on 2026-10-25; a load test cut CPU0's softirq share by 40% at
+# 10 MB/s and left the tailnet's throughput unchanged. Per interface: set again each time wlan0 is.
+echo 2 > /sys/class/net/wlan0/queues/rx-0/rps_cpus 2>/dev/null
 if ! pidof wpa_supplicant >/dev/null 2>&1; then
     /usr/sbin/wpa_supplicant -B -s -i wlan0 -c /etc/wpa_supplicant.conf
 fi
@@ -823,6 +839,8 @@ if [ -x "$TS/tailscaled" ] && ! pidof tailscaled >/dev/null 2>&1; then
     [ -c /dev/net/tun ] && TUN="--tun=tailscale0"
     (
         while :; do
+            # nftables is what the kernel has: say so, rather than let it probe iptables first
+            TS_DEBUG_FIREWALL_MODE=nftables \
             "$TS/tailscaled" $TUN --state="$TS/tailscaled.state" --statedir="$TS" \
                 --socket=/var/run/tailscale/tailscaled.sock --port=41641 2>&1 \
                 | logger -t tailscaled
