@@ -262,24 +262,34 @@ cfe-help: ## Print the CFE flash commands (first flash / recovery)
 # box has no scp binary, internal-sftp serves it). Kernel flash is riskier (mtd4); CFE recovery
 # always remains available.
 #
-# mtd5 is UBI: the rootfs is the static volume "rootfs". An update writes "rootfs_new", swaps the
-# two names in one atomic UBI rename and reboots (a power cut at any point leaves a bootable
-# "rootfs"); the boot after drops "rootfs_old". From a box still on the raw squashfs (mtdblock5),
-# the first flash formats mtd5 with the whole UBI image instead, then reboots at once: its running
-# root is gone (hence the static busybox in /dev/shm).
+# mtd5 is UBI: the rootfs is UBIFS in the volume named "rootfs", mounted read-only by that name
+# (root=ubi0:rootfs). An update writes the volume "rootfs_new", swaps the two names in one atomic
+# UBI rename and reboots: a power cut at any point leaves a "rootfs" that boots; the next boot
+# drops "rootfs_old". By name, never by volume id: the squashfs-through-ubiblock layout was found
+# by id (ubiblock0_<id>), and a swap left the kernel without a root (panic loop, 2026-10-25).
+# From a box still on the raw squashfs (mtdblock5) the first flash formats mtd5 with the whole UBI
+# image instead, then reboots at once: its running root is gone (hence busybox in /dev/shm).
 UBI_TOOLS = ubiformat ubimkvol ubiupdatevol ubirename ubirmvol
+# UBIFS geometry: 2 KiB pages, 124 KiB LEBs (128 KiB PEBs less the EC and VID headers); at most
+# 190 LEBs (23.5 MiB) in a 24 MiB volume, two of which fit mtd5 during an update
+UBIFS_OPTS = -m 2048 -e 126976 -c 190 -x lzo -F -U
 
-ubi: squashfs ## Wrap new_rootfs.squashfs in a UBI image for mtd5 -> rootfs.ubi
-	$(DOCKER_RUN) $(OUT)/host/ubinize -o rootfs.ubi -p 128KiB -m 2048 -s 2048 scripts/ubinize-rootfs.cfg
-	@ls -lh rootfs.ubi
+ubi: rootfs ## Pack new_rootfs/ as UBIFS -> rootfs.ubifs, and as a whole mtd5 UBI image -> rootfs.ubi
+	$(DOCKER_RUN) sh -c 'mkfs.ubifs $(UBIFS_OPTS) -r new_rootfs -o rootfs.ubifs && \
+	    ubinize -o rootfs.ubi -p 128KiB -m 2048 -s 2048 scripts/ubinize-rootfs.cfg'
+	@ls -lh rootfs.ubifs rootfs.ubi
 
+# On the box: the UBIFS root by name -> volume swap; still on ubiblock (the 2026-10-25 layout) ->
+# refuse (migrated by hand); raw squashfs on mtdblock5 -> format mtd5 with the whole image
 ROOTFS_UPDATE = cd /dev/shm && chmod +x busybox $(UBI_TOOLS) && \
-	if grep -q ubiblock /proc/cmdline; then \
-	    { ! ./busybox grep -q "^rootfs_new$$" /sys/class/ubi/ubi0_*/name || ./ubirmvol /dev/ubi0 -N rootfs_new; } && \
-	    size=$$(./busybox stat -c %s new_rootfs.squashfs) && \
-	    ./ubimkvol /dev/ubi0 -N rootfs_new -t static -s $$size && \
-	    ./ubiupdatevol /dev/ubi0_$$(./busybox grep -l "^rootfs_new$$" /sys/class/ubi/ubi0_*/name | ./busybox sed "s,.*/ubi0_,,;s,/name,,") new_rootfs.squashfs && \
+	if grep -q "root=ubi0:rootfs" /proc/cmdline; then \
+	    vol() { ./busybox grep -l "^$$1$$" /sys/class/ubi/ubi0_*/name | ./busybox sed "s,.*/ubi0_,,;s,/name,,"; } && \
+	    { [ -z "$$(vol rootfs_new)" ] || ./ubirmvol /dev/ubi0 -N rootfs_new; } && \
+	    ./ubimkvol /dev/ubi0 -N rootfs_new -s 24MiB && \
+	    ./ubiupdatevol /dev/ubi0_$$(vol rootfs_new) rootfs.ubifs && \
 	    ./ubirename /dev/ubi0 rootfs rootfs_old rootfs_new rootfs; \
+	elif grep -q ubiblock /proc/cmdline; then \
+	    echo "!! root on ubiblock: migrate to the UBIFS root first" && false; \
 	else \
 	    ./ubiformat /dev/mtd5 -f rootfs.ubi -y -q; \
 	fi && ./busybox sync
@@ -287,8 +297,9 @@ ROOTFS_UPDATE = cd /dev/shm && chmod +x busybox $(UBI_TOOLS) && \
 flash-rootfs: ## Flash the rootfs (UBI volume swap on mtd5) over SSH, then reboot
 	@test -f rootfs.ubi || { echo "!! rootfs.ubi missing — run: make ubi"; exit 1; }
 	@echo ">>> Flashing rootfs (mtd5) on $(DEVICE_IP) in 3s — Ctrl+C to abort"; sleep 3
-	scp new_rootfs.squashfs rootfs.ubi $(OUT)/busybox $(addprefix $(OUT)/,$(UBI_TOOLS)) root@$(DEVICE_IP):/dev/shm/
-	$(SSH) '$(ROOTFS_UPDATE) && ./busybox reboot -f'
+	scp rootfs.ubifs rootfs.ubi $(OUT)/busybox $(addprefix $(OUT)/,$(UBI_TOOLS)) root@$(DEVICE_IP):/dev/shm/
+	@# reboot -f drops the link: ssh then exits 255, a failure before it exits 1
+	$(SSH) '$(ROOTFS_UPDATE) && ./busybox reboot -f' || [ $$? -eq 255 ]
 
 flash-kernel: ## Flash build_output/vmlinuz to mtd4 over SSH, then reboot (CFE recovers if it fails)
 	@test -f $(OUT)/vmlinuz || { echo "!! $(OUT)/vmlinuz missing — run: make kernel"; exit 1; }
@@ -300,10 +311,10 @@ flash-kernel: ## Flash build_output/vmlinuz to mtd4 over SSH, then reboot (CFE r
 flash-all: ## Flash kernel (mtd4) and rootfs (mtd5) over SSH, then reboot once
 	@test -f $(OUT)/vmlinuz -a -f rootfs.ubi || { echo "!! run: make kernel ubi"; exit 1; }
 	@echo ">>> Flashing KERNEL + rootfs on $(DEVICE_IP) in 5s — Ctrl+C to abort"; sleep 5
-	scp $(OUT)/vmlinuz new_rootfs.squashfs rootfs.ubi $(OUT)/busybox $(OUT)/flash_erase $(OUT)/nandwrite \
+	scp $(OUT)/vmlinuz rootfs.ubifs rootfs.ubi $(OUT)/busybox $(OUT)/flash_erase $(OUT)/nandwrite \
 	    $(addprefix $(OUT)/,$(UBI_TOOLS)) root@$(DEVICE_IP):/dev/shm/
 	$(SSH) 'cd /dev/shm && chmod +x flash_erase nandwrite && ./flash_erase -q /dev/mtd4 0 0 && \
-	    ./nandwrite -q -p /dev/mtd4 vmlinuz && $(ROOTFS_UPDATE) && ./busybox reboot -f'
+	    ./nandwrite -q -p /dev/mtd4 vmlinuz && $(ROOTFS_UPDATE) && ./busybox reboot -f' || [ $$? -eq 255 ]
 
 # Tailscale lives on the backup disk (/srv/backup/system/tailscale): an
 # upgrade is a copy and a restart, no reflash. The supervisor loop in
@@ -320,7 +331,7 @@ connect: ## Open the UART console (picocom, logs to logs/)
 # Cleaning
 # -----------------------------------------------------------------------------
 clean: ## Remove build artifacts (keeps builder image + kernel volume)
-	rm -rf $(OUT) new_rootfs new_rootfs.squashfs rootfs.ubi rootfs-cfe.ubi
+	rm -rf $(OUT) new_rootfs new_rootfs.squashfs rootfs.ubifs rootfs.ubi rootfs-cfe.ubi
 
 distclean: clean kernel-clean ## Also drop kernel volume, tarball cache and builder image
 	rm -rf $(STAMP)

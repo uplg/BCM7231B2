@@ -33,10 +33,13 @@
 		 * rtw88_usb.switch_usb_mode=0: the BCM7231 has no USB 3 host; at probe
 		 * rtw88 switched the RTL8812BU to USB 3 anyway, the dongle dropped off
 		 * the bus mid-write (-71 errors) and came back in USB 2.
-		 * ubi.mtd/ubi.block: the rootfs is a squashfs in the static UBI volume
-		 * "rootfs" on mtd5 (RootFS), read through ubiblock: UBI handles the
-		 * NAND's bad blocks, mtdblock did not. */
-		bootargs = "console=ttyS0,115200 ubi.mtd=RootFS ubi.block=0,rootfs root=/dev/ubiblock0_0 rootfstype=squashfs ro init=/sbin/init libata.force=1.5Gbps rcutree.kthread_prio=10 rtw88_usb.switch_usb_mode=0";
+		 * ubi.mtd/root=ubi0:rootfs: the rootfs is UBIFS in the UBI volume named
+		 * "rootfs" on mtd5 (RootFS), mounted read-only by that name (UBI
+		 * handles the NAND's bad blocks, mtdblock did not). By name, not by
+		 * volume id: an update writes "rootfs_new" and swaps the names; a
+		 * squashfs through ubiblock was found by id (ubiblock0_<id>) and that
+		 * swap left the kernel without a root (panic loop, 2026-10-25). */
+		bootargs = "console=ttyS0,115200 ubi.mtd=RootFS root=ubi0:rootfs rootfstype=ubifs ro init=/sbin/init libata.force=1.5Gbps rcutree.kthread_prio=10 rtw88_usb.switch_usb_mode=0";
 		stdout-path = &uart0;
 	};
 };

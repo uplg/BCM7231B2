@@ -63,7 +63,7 @@ incremental (~1.5 min); source tarballs are cached in `build/dl/`.
 make all            # kernel + rootfs UBI image — everything flashable
 make kernel         # -> build_output/vmlinux        (incremental)
 make squashfs       # -> new_rootfs.squashfs         (rootfs + services)
-make ubi            # -> rootfs.ubi                  (the squashfs in UBI volume "rootfs")
+make ubi            # -> rootfs.ubifs, rootfs.ubi    (UBIFS rootfs; whole-mtd5 UBI image)
 make busybox dropbear lighttpd mtdutils tools   # individual pieces
 make e2fsprogs openssh smartctl tailscale       # backup target pieces
 
@@ -122,11 +122,14 @@ make flash-rootfs DEVICE_IP=<wlan0 address>   # same over WiFi
 ```
 
 The NAND is reached through UBI only (bad blocks, wear levelling, power cuts):
-mtd5 holds the squashfs in the static UBI volume `rootfs`, read through
-`ubiblock` (`ubi.mtd=RootFS ubi.block=0,rootfs root=/dev/ubiblock0_0`); a
-rootfs update writes `rootfs_new`, swaps the names in one atomic `ubirename`
-and reboots, and the next boot drops `rootfs_old`. `/config` is UBIFS on mtd2
-(UBI device 1). There is no `mtdblock`.
+mtd5 holds the rootfs as UBIFS in the UBI volume named `rootfs`, mounted
+read-only **by that name** (`ubi.mtd=RootFS root=ubi0:rootfs rootfstype=ubifs`).
+A rootfs update writes `rootfs_new`, swaps the names in one atomic `ubirename`
+and reboots (a power cut at any point leaves a `rootfs` that boots), and the
+next boot drops `rootfs_old`. Never by volume id: a squashfs read through
+`ubiblock` is found as `ubiblock0_<id>`, and swapping names left the kernel
+without a root (panic loop, 2026-10-25). `/config` is UBIFS on mtd2 (UBI
+device 1). There is no `mtdblock`.
 
 The images travel with `scp` in SFTP mode (OpenSSH's `internal-sftp`; the
 box has no `scp` binary). From a box still on Dropbear, copy with `scp -O`.

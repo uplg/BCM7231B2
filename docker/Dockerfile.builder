@@ -56,4 +56,7 @@ RUN wget -qO /tmp/rustup-init https://static.rust-lang.org/rustup/dist/x86_64-un
     && rm /tmp/rustup-init
 ENV PATH=/opt/cargo/bin:$PATH
 
+# mkfs.ubifs + ubinize: the rootfs is a UBIFS image in the UBI volume "rootfs" (make ubi)
+RUN apt-get update -qq && apt-get install -y -qq mtd-utils && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /work

@@ -43,5 +43,6 @@ device/vykar/
 device/root-password
 
 # rootfs UBI images (make ubi / make tftp)
+rootfs.ubifs
 rootfs.ubi
 rootfs-cfe.ubi

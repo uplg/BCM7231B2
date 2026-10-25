@@ -435,6 +435,12 @@ info "Writing init scripts..."
 cat > "$NEWROOT/etc/init.d/rcS" << 'INITSCRIPT'
 #!/bin/sh
 # AirTies — system init: mount fs, bring up net, start services, hand off to getty.
+# Each phase also goes to the kernel log: the serial console prints it even while userspace output
+# is held back (a stray XOFF on the line held every "[init]" line of a boot on 2026-10-25), and
+# syslog keeps it. The last "rcS:" line of a stuck boot says where it stuck.
+step() { echo "<6>rcS: $*" > /dev/kmsg; }
+step start
+stty -ixon -ixoff < /dev/console 2>/dev/null
 echo "[init] Starting AirTies..."
 
 mount -t proc proc /proc
@@ -447,6 +453,20 @@ mount -t tmpfs -o size=10M tmpfs /tmp
 mount -t tmpfs -o size=2M tmpfs /var
 mkdir -p /var/run /var/log /var/tmp /var/lib
 
+# Boot guard: rcS must reach its end within 3 minutes, whatever holds it. On 2026-10-25 a boot
+# stopped after eth0 (the disk had not answered): no WiFi, no sshd, nothing to reboot it, until a
+# power cycle. The watchdog cannot see that: its daemon pets from its own process.
+( sleep 180; [ -e /var/run/rcS.done ] || { step "stuck for 180 s, rebooting"; reboot -f; } ) \
+    </dev/null >/dev/null 2>&1 &
+
+# Hardware watchdog (bcm7038-wdt): 60 s timeout, petted every 10 s, from now on: a kernel hang
+# anywhere in the boot stops the petting -> hardware reset -> CFE boots the kernel again.
+if [ -c /dev/watchdog ]; then
+    watchdog -T 60 -t 10 /dev/watchdog
+    echo "[init] Watchdog armed (60s timeout)"
+fi
+step "watchdog armed"
+
 # Persistent storage: UBIFS on mtd2 (ConfigFS, 6 MB) as UBI device 1, then overlay /etc and
 # /root so changes (resolv.conf, ssh host keys, shell history) survive reboots and reflashes.
 # UBI rather than JFFS2 on mtdblock: it handles the NAND's bad blocks and power cuts (JFFS2 logged
@@ -454,6 +474,7 @@ mkdir -p /var/run /var/log /var/tmp /var/lib
 # RENAME_WHITEOUT. Once, when mtd2 is not UBI yet: its JFFS2 files are kept in RAM, mtd2 is
 # formatted for UBI, a "config" volume made and the files put back. A JFFS2 that mounts but
 # cannot be copied is left alone (volatile /config this boot) rather than formatted.
+step config
 mkdir -p /config
 if [ "$(head -c 4 /dev/mtd2)" != "UBI#" ]; then
     echo "[init] /config: moving mtd2 to UBIFS (once)..."
@@ -499,6 +520,7 @@ if [ -e /sys/block/zram0 ]; then
         && echo "[init] zram swap: 64 MB"
 fi
 
+step eth0
 ifconfig eth0 up 2>/dev/null || true
 if command -v udhcpc >/dev/null 2>&1; then
     udhcpc -i eth0 -s /etc/network/udhcpc.script -n -q >/dev/null 2>&1 || true
@@ -510,17 +532,21 @@ if [ -z "$IP_ADDR" ]; then
     IP_ADDR=$(ifconfig eth0 2>/dev/null | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}')
 fi
 
+step syslog
 syslogd -C256
 klogd
 
 # WiFi + kird, after syslogd (they log through it). Backgrounded with fds
 # detached from the console: getty's vhangup() on ttyS0 would otherwise kill
 # them once rcS ends (wifi waits up to 10s for USB enumeration).
+step wifi
 [ -x /etc/init.d/wifi ] && /etc/init.d/wifi </dev/null >/dev/null 2>&1 &
 # kird: Ruwido remote -> maison bridge (no-op without /etc/kird.conf)
+step kird
 [ -x /etc/init.d/kird ] && /etc/init.d/kird </dev/null >/dev/null 2>&1
 # The clock, whatever the disk does (it was set from the backup script only: a disk that failed
 # its check left the box in 1970, its TLS refused); then the backup target (disk, tailnet, SFTP)
+step "ntp, backup"
 /etc/init.d/ntp </dev/null >/dev/null 2>&1 &
 [ -x /etc/init.d/backup ] && /etc/init.d/backup </dev/null >/dev/null 2>&1 &
 
@@ -530,14 +556,6 @@ klogd
 echo 1 > /proc/sys/kernel/panic_on_rcu_stall
 echo 1 > /proc/sys/kernel/max_rcu_stall_to_panic
 
-# Hardware watchdog (bcm7038-wdt): 60 s timeout, petted every 10 s.
-# A hard hang (kernel or PID-storm) stops the petting -> hardware reset
-# -> CFE STARTUP chain boots the kernel (or recovery if it's corrupt).
-if [ -c /dev/watchdog ]; then
-    watchdog -T 60 -t 10 /dev/watchdog
-    echo "[init] Watchdog armed (60s timeout)"
-fi
-
 USB_MOUNT=
 if [ -e /dev/sda1 ]; then
     mkdir -p /mnt/usb
@@ -545,6 +563,7 @@ if [ -e /dev/sda1 ]; then
 fi
 
 # SSH: OpenSSH (/etc/init.d/sshd) when the image has it, else Dropbear
+step sshd
 if [ -x /etc/init.d/sshd ]; then
     echo "[init] Starting SSH (OpenSSH)..."
     /etc/init.d/sshd
@@ -575,6 +594,8 @@ elif [ -x /usr/sbin/httpd ]; then
     /usr/sbin/httpd -p 80 -h /usr/share/www
 fi
 
+touch /var/run/rcS.done
+step done
 echo ""
 echo "============================================"
 echo "  AirTies ready"
@@ -746,9 +767,19 @@ cat > "$NEWROOT/etc/init.d/backup" << 'BACKUPSCRIPT'
 # Idempotent. Runs in the background from rcS (waits for disk and clock).
 D=/srv/backup   # mount point baked into the read-only rootfs
 if ! mountpoint -q "$D"; then
+    # The disk can miss the boot: on 2026-10-25, after a warm reboot, it did not answer IDENTIFY
+    # (3 timeouts) and stayed unseen until a power cycle. Every 30 s for 10 minutes, the SATA
+    # host is rescanned: libata resets the link and asks the disk again.
     n=0
-    while ! DEV=$(findfs LABEL=backup 2>/dev/null) && [ "$n" -lt 30 ]; do sleep 1; n=$((n + 1)); done
-    [ -n "$DEV" ] || { logger -t backup "no disk labelled 'backup'"; exit 1; }
+    while ! DEV=$(findfs LABEL=backup 2>/dev/null) && [ "$n" -lt 600 ]; do
+        sleep 1; n=$((n + 1))
+        if [ $((n % 30)) -eq 0 ]; then
+            logger -t backup "no disk labelled 'backup' after $n s: rescanning SATA"
+            for h in /sys/class/scsi_host/host*/scan; do echo "- - -" > "$h"; done
+        fi
+    done
+    [ -n "$DEV" ] || { logger -t backup "no disk labelled 'backup' after 10 min"; exit 1; }
+    [ "$n" -ge 30 ] && logger -t backup "disk found after $n s"
     # -p repairs what is safe to repair; 4 and up means a person must look
     e2fsck -p "$DEV" > /tmp/fsck.log 2>&1; rc=$?
     logger -t backup < /tmp/fsck.log
