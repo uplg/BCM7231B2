@@ -160,6 +160,8 @@ server.username       = "www"
 server.groupname      = "www"
 server.pid-file       = "/var/run/lighttpd.pid"
 server.errorlog-use-syslog = "enable"
+# no RTC: the clock may still step if NTP was slow to answer at boot; never restart over it
+server.feature-flags  = ( "server.clock-jump-restart" => 0 )
 server.upload-dirs    = ( "/tmp" )
 index-file.names      = ( "index.html" )
 mimetype.assign = (
@@ -213,8 +215,8 @@ else
     warn "No device/kird.conf — kird stays down (see device/kird.conf.example)"
 fi
 
-# --- Flash tools: let the box reflash itself over SSH (make flash-rootfs) ---
-for t in flash_erase nandwrite; do
+# --- Flash tools: let the box reflash itself over SSH (make flash-rootfs); UBI ones for /config ---
+for t in flash_erase nandwrite ubiformat ubiattach ubimkvol ubiupdatevol ubirename ubirmvol; do
     if [ -f "$OUTDIR/$t" ]; then
         info "+ $t"
         cp "$OUTDIR/$t" "$NEWROOT/usr/sbin/$t"; chmod 755 "$NEWROOT/usr/sbin/$t"
@@ -445,17 +447,38 @@ mount -t tmpfs -o size=10M tmpfs /tmp
 mount -t tmpfs -o size=2M tmpfs /var
 mkdir -p /var/run /var/log /var/tmp /var/lib
 
-# Persistent storage: JFFS2 on mtd2 (ConfigFS, 6 MB), then overlay /etc
-# and /root so changes (resolv.conf, dropbear keys, shell history) survive
-# reboots and reflashes.  First boot: mtd2 still holds the vendor ConfigFS
-# (backed up in backup/mtd2_backup.bin) — erase with cleanmarkers, remount.
+# Persistent storage: UBIFS on mtd2 (ConfigFS, 6 MB) as UBI device 1, then overlay /etc and
+# /root so changes (resolv.conf, ssh host keys, shell history) survive reboots and reflashes.
+# UBI rather than JFFS2 on mtdblock: it handles the NAND's bad blocks and power cuts (JFFS2 logged
+# "Empty flash" and data CRC errors after each one), and UBIFS gives overlayfs tmpfile and
+# RENAME_WHITEOUT. Once, when mtd2 is not UBI yet: its JFFS2 files are kept in RAM, mtd2 is
+# formatted for UBI, a "config" volume made and the files put back. A JFFS2 that mounts but
+# cannot be copied is left alone (volatile /config this boot) rather than formatted.
 mkdir -p /config
-if ! mount -t jffs2 /dev/mtdblock2 /config 2>/dev/null; then
-    echo "[init] /config: formatting mtd2 (first boot)..."
-    flash_erase -j -q /dev/mtd2 0 0 2>/dev/null
-    mount -t jffs2 /dev/mtdblock2 /config 2>/dev/null \
-        || echo "[init] WARNING: /config unavailable, running volatile"
+if [ "$(head -c 4 /dev/mtd2)" != "UBI#" ]; then
+    echo "[init] /config: moving mtd2 to UBIFS (once)..."
+    mkdir -p /dev/shm/oldcfg
+    if mount -t jffs2 -o ro mtd2 /dev/shm/oldcfg 2>/dev/null; then
+        tar -C /dev/shm/oldcfg -cf /dev/shm/config.tar . && touch /dev/shm/config.kept
+        umount /dev/shm/oldcfg
+        [ -e /dev/shm/config.kept ] && ubiformat /dev/mtd2 -y -q
+    else
+        ubiformat /dev/mtd2 -y -q    # blank, or the vendor's ConfigFS (backup/mtd2_backup.bin)
+    fi
 fi
+if [ "$(head -c 4 /dev/mtd2)" = "UBI#" ] && ubiattach -m 2 -d 1 >/dev/null; then
+    [ -e /dev/ubi1_0 ] || ubimkvol /dev/ubi1 -N config -m >/dev/null
+    mount -t ubifs ubi1:config /config
+fi
+if [ -e /dev/shm/config.kept ] && grep -q ' /config ' /proc/mounts; then
+    tar -C /config -xf /dev/shm/config.tar && sync && echo "[init] /config: moved to UBIFS"
+fi
+rm -rf /dev/shm/oldcfg /dev/shm/config.tar /dev/shm/config.kept
+grep -q ' /config ' /proc/mounts || echo "[init] WARNING: /config unavailable, running volatile"
+
+# A rootfs update (make flash-rootfs) writes the new image to the volume "rootfs_new", swaps the
+# names atomically and reboots: the previous one, now "rootfs_old", goes once this one booted
+grep -l '^rootfs_old$' /sys/class/ubi/ubi0_*/name >/dev/null 2>&1 && ubirmvol /dev/ubi0 -N rootfs_old
 if grep -q ' /config ' /proc/mounts; then
     for d in etc root; do
         mkdir -p "/config/overlay/$d" "/config/overlay/.$d-work"
@@ -496,12 +519,16 @@ klogd
 [ -x /etc/init.d/wifi ] && /etc/init.d/wifi </dev/null >/dev/null 2>&1 &
 # kird: Ruwido remote -> maison bridge (no-op without /etc/kird.conf)
 [ -x /etc/init.d/kird ] && /etc/init.d/kird </dev/null >/dev/null 2>&1
-# Backup target (disk, clock, tailnet, SFTP); without it, just the clock
-if [ -x /etc/init.d/backup ]; then
-    /etc/init.d/backup </dev/null >/dev/null 2>&1 &
-else
-    /etc/init.d/ntp </dev/null >/dev/null 2>&1 &
-fi
+# The clock, whatever the disk does (it was set from the backup script only: a disk that failed
+# its check left the box in 1970, its TLS refused); then the backup target (disk, tailnet, SFTP)
+/etc/init.d/ntp </dev/null >/dev/null 2>&1 &
+[ -x /etc/init.d/backup ] && /etc/init.d/backup </dev/null >/dev/null 2>&1 &
+
+# An RCU stall (a CPU stuck for 21 s) is a panic, and a panic reboots (CONFIG_PANIC_TIMEOUT):
+# on 2026-10-25 CPU0 stopped running its timers under the backups' load; the kernel saw the stall
+# and only reported it, while the watchdog daemon, on the live CPU1, kept petting: 5 h frozen.
+echo 1 > /proc/sys/kernel/panic_on_rcu_stall
+echo 1 > /proc/sys/kernel/max_rcu_stall_to_panic
 
 # Hardware watchdog (bcm7038-wdt): 60 s timeout, petted every 10 s.
 # A hard hang (kernel or PID-storm) stops the petting -> hardware reset
@@ -539,9 +566,10 @@ elif [ -x /usr/sbin/dropbear ]; then
     /usr/sbin/dropbear -r "$DBKEYDIR/dropbear_rsa_host_key" -r "$DBKEYDIR/dropbear_ed25519_host_key" \
         $(cat /etc/dropbear/args 2>/dev/null)
 fi
+# lighttpd starts from /etc/init.d/ntp once the clock is set: started in 1970, it saw the clock
+# jump at the first NTP sync, tried a graceful restart and stopped
 if [ -x /usr/sbin/lighttpd ]; then
-    echo "[init] Starting HTTP (lighttpd)..."
-    /usr/sbin/lighttpd -f /etc/lighttpd/lighttpd.conf
+    :
 elif [ -x /usr/sbin/httpd ]; then
     echo "[init] Starting HTTP..."
     /usr/sbin/httpd -p 80 -h /usr/share/www
@@ -702,6 +730,9 @@ until ntpd -n -q $PEERS >/dev/null 2>&1; do
     sleep 5
 done
 logger -t ntp "clock: $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
+touch /var/run/clock-set
+# the web server, once the clock is right (see rcS)
+pidof lighttpd >/dev/null 2>&1 || { [ -x /usr/sbin/lighttpd ] && /usr/sbin/lighttpd -f /etc/lighttpd/lighttpd.conf; }
 ntpd $PEERS
 NTPSCRIPT
 chmod 755 "$NEWROOT/etc/init.d/ntp"
@@ -749,8 +780,9 @@ for h in $(cat /etc/ssh/backup_hosts); do
     chown "vykar-$h:vykar" "$D/vykar-$h/repo"; chmod 700 "$D/vykar-$h/repo"
 done
 
-# Clock first: Headscale's TLS needs it
-/etc/init.d/ntp
+# Clock first: Headscale's TLS needs it (/etc/init.d/ntp, from rcS, marks it set)
+n=0
+while [ ! -e /var/run/clock-set ] && [ "$n" -lt 300 ]; do sleep 1; n=$((n + 1)); done
 
 # tailscaled: kernel TUN when built in, else userspace networking
 TS="$D/system/tailscale"
@@ -782,7 +814,10 @@ cat > "$NEWROOT/usr/sbin/disk-health" << 'HEALTHSCRIPT'
 # every backup chroot: the servers read /disk-health over SFTP.
 D=/srv/backup
 mountpoint -q "$D" || exit 0
-DEV=$(findfs LABEL=backup 2>/dev/null) || exit 1
+# the device under the mount: findfs would probe every block device (each NAND partition, the
+# USB sticks) once an hour to find a label it already knows
+DEV=$(awk -v d="$D" '$2 == d {print $1}' /proc/mounts)
+[ -n "$DEV" ] || exit 1
 tmp=$(mktemp) || exit 1
 # Non-zero exit bits flag warnings: the JSON says what they are
 smartctl -j -i -H -A "$DEV" > "$tmp"

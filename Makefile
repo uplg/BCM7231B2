@@ -6,7 +6,7 @@
 # incremental rebuilds, source tarballs cached in build/dl.
 #
 #   make help          — list targets
-#   make all           — kernel + squashfs (everything needed to flash)
+#   make all           — kernel + rootfs UBI image (everything needed to flash)
 #   make kernel KERNEL_VERSION=7.1.4   — try another kernel
 # =============================================================================
 
@@ -15,6 +15,8 @@ KERNEL_VERSION   ?= 7.3
 # (kernel/patch_bcmgenet_debug.py). Off by default since the IRQ
 # off-by-one root cause was fixed in the DTS.
 GENET_DEBUG      ?= 0
+# WIFI_DEBUG=1 adds debugfs and rtw88/mac80211 diagnostics (kernel/config/debug-wifi.config)
+WIFI_DEBUG       ?= 0
 BUSYBOX_VERSION  ?= 1.38.0
 DROPBEAR_VERSION ?= 2026.94
 MTDUTILS_VERSION ?= 2.3.1
@@ -43,7 +45,8 @@ DEVICE_IP ?= 192.168.2.1
 HOST_IP   ?= 192.168.2.2
 TFTP_DIR  ?= /private/tftpboot
 
-SSH := ssh root@$(DEVICE_IP)
+# keepalive: reboot -f drops the link without a FIN, give up within 15 s
+SSH := ssh -o ServerAliveInterval=5 -o ServerAliveCountMax=3 root@$(DEVICE_IP)
 
 DOCKER_RUN = docker run --rm --platform linux/amd64 \
 	-v "$(CURDIR)":/work \
@@ -54,7 +57,7 @@ DOCKER_RUN = docker run --rm --platform linux/amd64 \
 
 # Kernel additionally gets a named volume so the source tree (and object
 # files) persist across builds — incremental rebuilds instead of 30 minutes.
-DOCKER_RUN_KERNEL = $(subst -w /work,-v $(KBUILD_VOLUME):/kbuild -e KERNEL_VERSION=$(KERNEL_VERSION) -e GENET_DEBUG=$(GENET_DEBUG) -w /work,$(DOCKER_RUN))
+DOCKER_RUN_KERNEL = $(subst -w /work,-v $(KBUILD_VOLUME):/kbuild -e KERNEL_VERSION=$(KERNEL_VERSION) -e GENET_DEBUG=$(GENET_DEBUG) -e WIFI_DEBUG=$(WIFI_DEBUG) -w /work,$(DOCKER_RUN))
 
 # kird gets a named volume for the cargo registry so build-std's crate
 # downloads survive between builds.
@@ -64,7 +67,7 @@ DOCKER_RUN_KIRD = $(subst -w /work,-v airties-cargo:/opt/cargo/registry -w /work
 TOOLS     := ephy_init ephy_diag genet_dump irq_dump init_raw init_test mount kir_probe memprobe mxl_probe xpt_cap dvbzap tunerd
 TOOL_BINS := $(addprefix $(OUT)/,$(TOOLS))
 
-.PHONY: help all builder kernel busybox dropbear mtdutils tools wpa kird rootfs squashfs \
+.PHONY: help all builder kernel busybox dropbear mtdutils tools wpa kird rootfs squashfs ubi flash-all \
         e2fsprogs openssh smartctl tailscale \
         tftp cfe-help flash-rootfs flash-kernel install-tailscale connect \
         clean kernel-clean distclean
@@ -79,7 +82,7 @@ help: ## Show this help
 	@echo "  Variables: KERNEL_VERSION=$(KERNEL_VERSION)  BUSYBOX_VERSION=$(BUSYBOX_VERSION)"
 	@echo "             DROPBEAR_VERSION=$(DROPBEAR_VERSION)  DEVICE_IP=$(DEVICE_IP)"
 
-all: kernel squashfs ## Build everything flashable (kernel + rootfs squashfs)
+all: kernel ubi ## Build everything flashable (kernel + rootfs UBI image)
 
 # -----------------------------------------------------------------------------
 # Builder image — toolchain baked in, built once
@@ -221,12 +224,17 @@ squashfs: rootfs ## Pack new_rootfs/ -> new_rootfs.squashfs (gzip, 128K blocks)
 # -----------------------------------------------------------------------------
 # Deploy / flash
 # -----------------------------------------------------------------------------
-tftp: ## Copy vmlinuz + squashfs to $(TFTP_DIR) and start macOS tftpd (sudo)
+# CFE writes only the image's length: the UBI image is padded with 0xFF (pages that read as erased)
+# to the whole of mtd5 (70 MB), else the PEBs after it keep an older UBI whose image sequence
+# number makes the kernel refuse to attach
+RootFS_SIZE := 73400320
+tftp: ## Copy vmlinuz + the padded rootfs UBI image to $(TFTP_DIR) and start macOS tftpd (sudo)
 	@test -f $(OUT)/vmlinuz || { echo "!! $(OUT)/vmlinuz missing — run: make kernel"; exit 1; }
-	@test -f new_rootfs.squashfs || { echo "!! new_rootfs.squashfs missing — run: make squashfs"; exit 1; }
+	@test -f rootfs.ubi || { echo "!! rootfs.ubi missing — run: make ubi"; exit 1; }
+	{ cat rootfs.ubi; head -c $$(( $(RootFS_SIZE) - $$(stat -f %z rootfs.ubi) )) /dev/zero | tr '\000' '\377'; } > rootfs-cfe.ubi
 	sudo mkdir -p $(TFTP_DIR)
 	sudo cp $(OUT)/vmlinuz $(TFTP_DIR)/vmlinuz
-	sudo cp new_rootfs.squashfs $(TFTP_DIR)/new_rootfs.squashfs
+	sudo cp rootfs-cfe.ubi $(TFTP_DIR)/rootfs-cfe.ubi
 	sudo launchctl load -F /System/Library/LaunchDaemons/tftp.plist 2>/dev/null || true
 	@if /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate 2>/dev/null | grep -q enabled; then \
 		echo ""; \
@@ -241,7 +249,7 @@ cfe-help: ## Print the CFE flash commands (first flash / recovery)
 	@echo ""
 	@echo "In the CFE console (Ctrl+C during boot):"
 	@echo "  CFE> ifconfig eth0 -addr=$(DEVICE_IP) -mask=255.255.255.0 -gw=$(HOST_IP)"
-	@echo "  CFE> flash $(HOST_IP):new_rootfs.squashfs nandflash0.rootfs -noheader"
+	@echo "  CFE> flash $(HOST_IP):rootfs-cfe.ubi nandflash0.rootfs -noheader"
 	@echo "  CFE> flash $(HOST_IP):vmlinuz nandflash0.kernel -noheader"
 	@echo "  CFE> boot nandflash0.kernel:"
 	@echo ""
@@ -249,16 +257,38 @@ cfe-help: ## Print the CFE flash commands (first flash / recovery)
 	@echo "  CFE> boot -elf $(HOST_IP):vmlinuz"
 	@echo ""
 
-# On-device reflash over SSH — the running custom firmware ships flash_erase +
-# nandwrite, so iteration doesn't need the CFE/TFTP dance. scp runs in SFTP
-# mode (OpenSSH on the box has no scp binary, internal-sftp serves it). Kernel flash is
-# riskier (mtd4); CFE recovery always remains available.
-flash-rootfs: ## Flash new_rootfs.squashfs to mtd5 over SSH, then reboot
-	@test -f new_rootfs.squashfs || { echo "!! new_rootfs.squashfs missing — run: make squashfs"; exit 1; }
+# On-device reflash over SSH — the running custom firmware ships flash_erase, nandwrite and the
+# UBI tools, so iteration doesn't need the CFE/TFTP dance. scp runs in SFTP mode (OpenSSH on the
+# box has no scp binary, internal-sftp serves it). Kernel flash is riskier (mtd4); CFE recovery
+# always remains available.
+#
+# mtd5 is UBI: the rootfs is the static volume "rootfs". An update writes "rootfs_new", swaps the
+# two names in one atomic UBI rename and reboots (a power cut at any point leaves a bootable
+# "rootfs"); the boot after drops "rootfs_old". From a box still on the raw squashfs (mtdblock5),
+# the first flash formats mtd5 with the whole UBI image instead, then reboots at once: its running
+# root is gone (hence the static busybox in /dev/shm).
+UBI_TOOLS = ubiformat ubimkvol ubiupdatevol ubirename ubirmvol
+
+ubi: squashfs ## Wrap new_rootfs.squashfs in a UBI image for mtd5 -> rootfs.ubi
+	$(DOCKER_RUN) $(OUT)/host/ubinize -o rootfs.ubi -p 128KiB -m 2048 -s 2048 scripts/ubinize-rootfs.cfg
+	@ls -lh rootfs.ubi
+
+ROOTFS_UPDATE = cd /dev/shm && chmod +x busybox $(UBI_TOOLS) && \
+	if grep -q ubiblock /proc/cmdline; then \
+	    { ! ./busybox grep -q "^rootfs_new$$" /sys/class/ubi/ubi0_*/name || ./ubirmvol /dev/ubi0 -N rootfs_new; } && \
+	    size=$$(./busybox stat -c %s new_rootfs.squashfs) && \
+	    ./ubimkvol /dev/ubi0 -N rootfs_new -t static -s $$size && \
+	    ./ubiupdatevol /dev/ubi0_$$(./busybox grep -l "^rootfs_new$$" /sys/class/ubi/ubi0_*/name | ./busybox sed "s,.*/ubi0_,,;s,/name,,") new_rootfs.squashfs && \
+	    ./ubirename /dev/ubi0 rootfs rootfs_old rootfs_new rootfs; \
+	else \
+	    ./ubiformat /dev/mtd5 -f rootfs.ubi -y -q; \
+	fi && ./busybox sync
+
+flash-rootfs: ## Flash the rootfs (UBI volume swap on mtd5) over SSH, then reboot
+	@test -f rootfs.ubi || { echo "!! rootfs.ubi missing — run: make ubi"; exit 1; }
 	@echo ">>> Flashing rootfs (mtd5) on $(DEVICE_IP) in 3s — Ctrl+C to abort"; sleep 3
-	scp new_rootfs.squashfs root@$(DEVICE_IP):/dev/shm/new_rootfs.squashfs
-	scp $(OUT)/flash_erase $(OUT)/nandwrite root@$(DEVICE_IP):/dev/shm/
-	$(SSH) 'cd /dev/shm && chmod +x flash_erase nandwrite && ./flash_erase /dev/mtd5 0 0 && ./nandwrite -p /dev/mtd5 new_rootfs.squashfs && sync && reboot'
+	scp new_rootfs.squashfs rootfs.ubi $(OUT)/busybox $(addprefix $(OUT)/,$(UBI_TOOLS)) root@$(DEVICE_IP):/dev/shm/
+	$(SSH) '$(ROOTFS_UPDATE) && ./busybox reboot -f'
 
 flash-kernel: ## Flash build_output/vmlinuz to mtd4 over SSH, then reboot (CFE recovers if it fails)
 	@test -f $(OUT)/vmlinuz || { echo "!! $(OUT)/vmlinuz missing — run: make kernel"; exit 1; }
@@ -266,6 +296,14 @@ flash-kernel: ## Flash build_output/vmlinuz to mtd4 over SSH, then reboot (CFE r
 	scp $(OUT)/vmlinuz root@$(DEVICE_IP):/dev/shm/vmlinuz
 	scp $(OUT)/flash_erase $(OUT)/nandwrite root@$(DEVICE_IP):/dev/shm/
 	$(SSH) 'cd /dev/shm && chmod +x flash_erase nandwrite && ./flash_erase /dev/mtd4 0 0 && ./nandwrite -p /dev/mtd4 vmlinuz && sync && reboot'
+
+flash-all: ## Flash kernel (mtd4) and rootfs (mtd5) over SSH, then reboot once
+	@test -f $(OUT)/vmlinuz -a -f rootfs.ubi || { echo "!! run: make kernel ubi"; exit 1; }
+	@echo ">>> Flashing KERNEL + rootfs on $(DEVICE_IP) in 5s — Ctrl+C to abort"; sleep 5
+	scp $(OUT)/vmlinuz new_rootfs.squashfs rootfs.ubi $(OUT)/busybox $(OUT)/flash_erase $(OUT)/nandwrite \
+	    $(addprefix $(OUT)/,$(UBI_TOOLS)) root@$(DEVICE_IP):/dev/shm/
+	$(SSH) 'cd /dev/shm && chmod +x flash_erase nandwrite && ./flash_erase -q /dev/mtd4 0 0 && \
+	    ./nandwrite -q -p /dev/mtd4 vmlinuz && $(ROOTFS_UPDATE) && ./busybox reboot -f'
 
 # Tailscale lives on the backup disk (/srv/backup/system/tailscale): an
 # upgrade is a copy and a restart, no reflash. The supervisor loop in
@@ -282,7 +320,7 @@ connect: ## Open the UART console (picocom, logs to logs/)
 # Cleaning
 # -----------------------------------------------------------------------------
 clean: ## Remove build artifacts (keeps builder image + kernel volume)
-	rm -rf $(OUT) new_rootfs new_rootfs.squashfs
+	rm -rf $(OUT) new_rootfs new_rootfs.squashfs rootfs.ubi rootfs-cfe.ubi
 
 distclean: clean kernel-clean ## Also drop kernel volume, tarball cache and builder image
 	rm -rf $(STAMP)

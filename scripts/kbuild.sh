@@ -156,6 +156,25 @@ fi
 grep -q 'AirTies-: no EEE' drivers/net/ethernet/broadcom/genet/bcmgenet.c || \
     { echo "!! bcmgenet.c EEE patch failed (anchor changed in this kernel version?)"; exit 1; }
 
+# --- Patch: rtw88 USB loses an RX URB for good on each transient bus error (until a reset) ---
+python3 /work/kernel/patch_rtw88_usb_rx.py
+grep -q 'AirTies-: resubmit RX URB' drivers/net/wireless/realtek/rtw88/usb.c || \
+    { echo "!! rtw88 usb.c RX resubmit patch failed"; exit 1; }
+
+# --- Patch: the GISB arbiter's breakpoint IRQ is optional (the driver checks bp_irq > 0) but was
+# fetched with platform_get_irq(), which logs an error when the SoC has none (BCM7231) ---
+sed -i 's/bp_irq = platform_get_irq(pdev, 2);/bp_irq = platform_get_irq_optional(pdev, 2); \/* AirTies-: optional *\//' \
+    drivers/bus/brcmstb_gisb.c
+grep -q 'AirTies-: optional' drivers/bus/brcmstb_gisb.c || \
+    { echo "!! brcmstb_gisb.c optional bp_irq patch failed"; exit 1; }
+
+# --- Patch: libahci warned "masking port_map" even when the mask keeps every port (0x3 -> 0x3,
+# the DT lists both ports); warn only when ports are actually masked out ---
+sed -i 's/^\tif (hpriv->mask_port_map) {$/\tif (hpriv->mask_port_map \&\& (port_map \& ~hpriv->mask_port_map)) { \/* AirTies-: warn only when masking *\//' \
+    drivers/ata/libahci.c
+grep -q 'AirTies-: warn only' drivers/ata/libahci.c || \
+    { echo "!! libahci.c port_map warning patch failed"; exit 1; }
+
 # --- Optional: IRQ/DMA debug instrumentation (probe/open/ISR/timeout) ---
 # Historical GENET diagnosis aid — enable with `make kernel GENET_DEBUG=1`.
 if [ "$GENET_DEBUG" = "1" ] && \
@@ -177,7 +196,7 @@ grep -A2 'bool "Broadcom Generic BMIPS kernel"' arch/mips/Kconfig | grep -q SYS_
     { echo "!! Kconfig ZBOOT patch failed"; exit 1; }
 
 # --- Firmware baked in via CONFIG_EXTRA_FIRMWARE (repo fw/, mounted at /work/fw) ---
-for f in rtw88/rtw8822b_fw.bin regulatory.db; do
+for f in rtw88/rtw8822b_fw.bin regulatory.db regulatory.db.p7s; do
     [ -f "/work/fw/$f" ] || { echo "!! /work/fw/$f missing — CONFIG_EXTRA_FIRMWARE build will fail"; exit 1; }
 done
 
@@ -185,6 +204,10 @@ done
 echo "[*] Configuring (bmips_stb_defconfig + kernel/config/airties.config)..."
 make bmips_stb_defconfig
 scripts/kconfig/merge_config.sh -m .config /work/kernel/config/airties.config >/dev/null
+if [ "${WIFI_DEBUG:-0}" = "1" ]; then
+    echo "[*] WIFI_DEBUG=1: adding kernel/config/debug-wifi.config"
+    scripts/kconfig/merge_config.sh -m .config /work/kernel/config/debug-wifi.config >/dev/null
+fi
 make olddefconfig
 
 # --- Build ---

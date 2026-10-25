@@ -2,8 +2,11 @@
 # =============================================================================
 # In-container mtd-utils build (flash_erase + nandwrite, static, MIPS32 R1) —
 # invoked by `make mtdutils`. These also ship in the rootfs so the box can
-# reflash itself over SSH (make flash-rootfs / flash-kernel).
-# Output: /output/flash_erase, /output/nandwrite
+# reflash itself over SSH (make flash-rootfs / flash-kernel). The UBI tools
+# too: ubiformat writes the rootfs UBI image, ubiattach/ubimkvol bring up the
+# /config UBIFS. And ubinize for this host, to build that UBI image.
+# Output: /output/{flash_erase,nandwrite,ubiformat,ubiattach,ubimkvol},
+#         /output/host/ubinize
 # =============================================================================
 set -e
 
@@ -32,7 +35,7 @@ tar xjf "/dl/$TARBALL" -C "$BUILDDIR"
 cd "$BUILDDIR/mtd-utils-${MTDUTILS_VERSION}"
 
 echo "[*] Compiling library objects..."
-for f in libmtd libmtd_legacy common libcrc32; do
+for f in libmtd libmtd_legacy common libcrc32 libubi libscan libubigen; do
     ${CC} ${CFLAGS_COMMON} -I./include -DVERSION=\"${MTDUTILS_VERSION}\" \
         -c "lib/${f}.c" -o "lib/${f}.o"
 done
@@ -46,7 +49,19 @@ echo "[*] Building nandwrite..."
 ${CC} ${CFLAGS_COMMON} -static -I./include -DVERSION=\"${MTDUTILS_VERSION}\" \
     nand-utils/nandwrite.c ${LIB_OBJS} -o nandwrite
 
-for tool in flash_erase nandwrite; do
+for tool in ubiformat ubiattach ubimkvol ubiupdatevol ubirename ubirmvol; do
+    echo "[*] Building $tool..."
+    ${CC} ${CFLAGS_COMMON} -static -I./include -DVERSION=\"${MTDUTILS_VERSION}\" \
+        "ubi-utils/$tool.c" ${LIB_OBJS} lib/libubi.o lib/libscan.o lib/libubigen.o -o "$tool"
+done
+
+echo "[*] Building ubinize (host)..."
+mkdir -p /output/host
+gcc -O2 -D_GNU_SOURCE -I./include -DVERSION=\"${MTDUTILS_VERSION}\" ubi-utils/ubinize.c \
+    lib/libubigen.c lib/libiniparser.c lib/dictionary.c lib/libcrc32.c lib/common.c lib/libmtd.c lib/libmtd_legacy.c \
+    -o /output/host/ubinize
+
+for tool in flash_erase nandwrite ubiformat ubiattach ubimkvol ubiupdatevol ubirename ubirmvol; do
     "${STRIP}" "$tool"
     cp "$tool" /output/
     echo "[OK] $tool:"

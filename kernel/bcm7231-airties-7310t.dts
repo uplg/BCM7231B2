@@ -29,8 +29,14 @@
 		 * at 6 and 3 Gbps on this board; 1.5 Gbps is stable and still beyond
 		 * what a hard disk streams.
 		 * rcutree.kthread_prio: RCU kthreads run SCHED_FIFO, so a CPU-bound
-		 * network load cannot starve them (48 s stall, box frozen). */
-		bootargs = "console=ttyS0,115200 root=/dev/mtdblock5 rootfstype=squashfs ro init=/sbin/init libata.force=1.5Gbps rcutree.kthread_prio=10";
+		 * network load cannot starve them (48 s stall, box frozen).
+		 * rtw88_usb.switch_usb_mode=0: the BCM7231 has no USB 3 host; at probe
+		 * rtw88 switched the RTL8812BU to USB 3 anyway, the dongle dropped off
+		 * the bus mid-write (-71 errors) and came back in USB 2.
+		 * ubi.mtd/ubi.block: the rootfs is a squashfs in the static UBI volume
+		 * "rootfs" on mtd5 (RootFS), read through ubiblock: UBI handles the
+		 * NAND's bad blocks, mtdblock did not. */
+		bootargs = "console=ttyS0,115200 ubi.mtd=RootFS ubi.block=0,rootfs root=/dev/ubiblock0_0 rootfstype=squashfs ro init=/sbin/init libata.force=1.5Gbps rcutree.kthread_prio=10 rtw88_usb.switch_usb_mode=0";
 		stdout-path = &uart0;
 	};
 };

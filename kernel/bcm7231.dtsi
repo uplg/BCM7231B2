@@ -150,21 +150,21 @@
 		bsc_a: i2c@406200 {
 			compatible = "brcm,brcmstb-i2c";
 			reg = <0x406200 0x58>;
-			clock-frequency = <100000>;
+			clock-frequency = <375000>;	/* what CFE set and the tuners run at; 100 kHz is not a BSC speed */
 			status = "disabled";
 		};
 
 		bsc_b: i2c@406280 {
 			compatible = "brcm,brcmstb-i2c";
 			reg = <0x406280 0x58>;
-			clock-frequency = <100000>;
+			clock-frequency = <375000>;	/* what CFE set and the tuners run at; 100 kHz is not a BSC speed */
 			status = "disabled";
 		};
 
 		bsc_c: i2c@406300 {
 			compatible = "brcm,brcmstb-i2c";
 			reg = <0x406300 0x58>;
-			clock-frequency = <100000>;
+			clock-frequency = <375000>;	/* what CFE set and the tuners run at; 100 kHz is not a BSC speed */
 			status = "disabled";
 		};
 

@@ -60,9 +60,10 @@ toolchain; the kernel source tree persists in a Docker volume so rebuilds are
 incremental (~1.5 min); source tarballs are cached in `build/dl/`.
 
 ```bash
-make all            # kernel + squashfs — everything flashable
+make all            # kernel + rootfs UBI image — everything flashable
 make kernel         # -> build_output/vmlinux        (incremental)
 make squashfs       # -> new_rootfs.squashfs         (rootfs + services)
+make ubi            # -> rootfs.ubi                  (the squashfs in UBI volume "rootfs")
 make busybox dropbear lighttpd mtdutils tools   # individual pieces
 make e2fsprogs openssh smartctl tailscale       # backup target pieces
 
@@ -111,13 +112,21 @@ across reflashes. Console login (UART): root with `device/root-password`.
 
 ### Iteration (box already running this firmware)
 
-The box carries its own `flash_erase`/`nandwrite` — no CFE needed:
+The box carries its own `flash_erase`/`nandwrite` and UBI tools — no CFE needed:
 
 ```bash
-make squashfs flash-rootfs    # rebuild rootfs → flash mtd5 via SSH → reboot
+make ubi flash-rootfs         # rebuild rootfs → new UBI volume, atomic swap → reboot
 make kernel flash-kernel      # rebuild kernel → flash mtd4 via SSH → reboot
+make kernel ubi flash-all     # both, one reboot
 make flash-rootfs DEVICE_IP=<wlan0 address>   # same over WiFi
 ```
+
+The NAND is reached through UBI only (bad blocks, wear levelling, power cuts):
+mtd5 holds the squashfs in the static UBI volume `rootfs`, read through
+`ubiblock` (`ubi.mtd=RootFS ubi.block=0,rootfs root=/dev/ubiblock0_0`); a
+rootfs update writes `rootfs_new`, swaps the names in one atomic `ubirename`
+and reboots, and the next boot drops `rootfs_old`. `/config` is UBIFS on mtd2
+(UBI device 1). There is no `mtdblock`.
 
 The images travel with `scp` in SFTP mode (OpenSSH's `internal-sftp`; the
 box has no `scp` binary). From a box still on Dropbear, copy with `scp -O`.
@@ -138,7 +147,7 @@ it steals 192.168.2.1; the macOS firewall must allow `/usr/libexec/tftpd`,
 
 ```
 CFE> ifconfig eth0 -addr=192.168.2.1 -mask=255.255.255.0 -gw=192.168.2.2
-CFE> flash 192.168.2.2:new_rootfs.squashfs nandflash0.rootfs -noheader
+CFE> flash 192.168.2.2:rootfs-cfe.ubi nandflash0.rootfs -noheader
 CFE> flash 192.168.2.2:vmlinux nandflash0.kernel -noheader
 CFE> boot nandflash0.kernel:
 ```
