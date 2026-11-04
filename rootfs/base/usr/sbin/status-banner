@@ -1,6 +1,7 @@
 #!/bin/sh
 # The box at a glance (/var/run/issue, behind /etc/issue and /etc/motd): run at the end of the
 # boot, on a DHCP lease, once the clock is set and once the backup disk is mounted.
+# shellcheck source=/dev/null  # written at image build
 . /etc/firmware-release
 model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)
 role=""; [ -x /etc/init.d/backup ] && role=" · off-site backup target"

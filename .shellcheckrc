@@ -1,0 +1,3 @@
+# Sourced files are found next to the script that sources them (scripts/lib.sh)
+external-sources=true
+source-path=SCRIPTDIR

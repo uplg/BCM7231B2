@@ -1,0 +1,8 @@
+#!/bin/sh
+# syslogd in the foreground, under supervise: in RAM (logread) until the backup disk is up, then
+# on it, 5 x 2 MB (/etc/init.d/backup sets the flag and stops syslogd, supervise brings it back
+# here). A hang no longer takes the evidence with it.
+if [ -e /var/run/syslog-on-disk ] && mountpoint -q /srv/backup; then
+    exec syslogd -n -O /srv/backup/system/log/messages -s 2048 -b 5
+fi
+exec syslogd -n -C256

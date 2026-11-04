@@ -181,6 +181,7 @@ if [ ! -s "$ROOTPW_FILE" ]; then
 fi
 ROOTPW_HASH=$(openssl passwd -6 -stdin < "$ROOTPW_FILE" 2>/dev/null) \
     || ROOTPW_HASH=$(docker run --rm -i --platform linux/amd64 airties-builder openssl passwd -6 -stdin < "$ROOTPW_FILE")
+# shellcheck disable=SC2016  # the literal SHA-512 crypt prefix
 case "$ROOTPW_HASH" in '$6$'*) ;; *) err "could not hash device/root-password" ;; esac
 cat > "$NEWROOT/etc/shadow" << SHADOW
 root:${ROOTPW_HASH}:0:0:99999:7:::

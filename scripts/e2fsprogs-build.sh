@@ -4,6 +4,8 @@
 # these; BusyBox only knows ext2.
 # Output: /output/mke2fs, /output/e2fsck, /output/tune2fs
 set -e
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh"
 
 E2FSPROGS_VERSION="${E2FSPROGS_VERSION:?E2FSPROGS_VERSION not set}"
 TARBALL="e2fsprogs-${E2FSPROGS_VERSION}.tar.xz"
@@ -13,11 +15,7 @@ CROSS="$(cat /opt/cross-prefix)"
 
 echo "e2fsprogs ${E2FSPROGS_VERSION} — static MIPS32 R1"
 
-if [ ! -f "/dl/$TARBALL" ]; then
-    echo "[*] Downloading $URL ..."
-    wget -q -O "/dl/$TARBALL.part" "$URL"
-    mv "/dl/$TARBALL.part" "/dl/$TARBALL"
-fi
+fetch "$TARBALL" "$URL"
 
 BUILDDIR=/tmp/e2fs
 rm -rf "$BUILDDIR"; mkdir -p "$BUILDDIR"

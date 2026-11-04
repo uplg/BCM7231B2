@@ -1,4 +1,6 @@
 #!/bin/sh
+# udhcpc's hook: it passes interface, ip, subnet, router, dns... in the environment
+# shellcheck disable=SC2154
 case "$1" in
     deconfig)
         ifconfig "$interface" 0.0.0.0

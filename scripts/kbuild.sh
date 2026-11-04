@@ -14,7 +14,12 @@
 # All source patches are guarded so they apply exactly once even though the
 # tree persists between runs. The DTS files are re-copied every run so DTS
 # iteration only needs `make kernel`.
+
+# The Makefile lines echoed below are literal make syntax: $(CONFIG_...) must not expand
+# shellcheck disable=SC2016
 set -e
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh"
 
 KERNEL_VERSION="${KERNEL_VERSION:?KERNEL_VERSION not set}"
 MAJOR="${KERNEL_VERSION%%.*}"
@@ -30,11 +35,7 @@ echo "Linux ${KERNEL_VERSION} for BCM7231 (${CROSS})"
 
 # Fetch + extract (once per version)
 if [ ! -d "$SRC" ]; then
-    if [ ! -f "/dl/$TARBALL" ]; then
-        echo "[*] Downloading $URL ..."
-        wget -q -O "/dl/$TARBALL.part" "$URL"
-        mv "/dl/$TARBALL.part" "/dl/$TARBALL"
-    fi
+    fetch "$TARBALL" "$URL"
     echo "[*] Extracting to $SRC ..."
     tar xf "/dl/$TARBALL" -C /kbuild
 fi

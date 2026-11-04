@@ -33,20 +33,21 @@ fi
 # were zeros (2026-10-12).
 sysctl -w vm.dirty_writeback_centisecs=100 vm.dirty_expire_centisecs=200 >/dev/null
 
-# Logs onto the disk from here on: a hang no longer takes them along (the
-# RAM buffer so far is kept, then syslogd writes the file; read it with
-# tail, logread has no buffer any more).
+# Logs onto the disk from here on: a hang no longer takes them along. The RAM buffer so far is
+# kept, then syslogd stops and supervise starts it again on the disk (syslogd-run); read the
+# file with tail, logread has no buffer any more.
 L="$D/system/log"
 mkdir -p "$L"; chmod 700 "$D/system" "$L"
-if ! pgrep -f "syslogd -O $L" >/dev/null 2>&1; then
+if [ ! -e /var/run/syslog-on-disk ]; then
     { echo "--- boot $(date -u '+%F %T') (RAM buffer before the disk) ---"; logread; } >> "$L/messages" 2>/dev/null
-    killall syslogd 2>/dev/null; sleep 1
-    syslogd -O "$L/messages" -s 2048 -b 5
+    touch /var/run/syslog-on-disk
+    killall syslogd 2>/dev/null
 fi
 
 # Chroots: every component root-owned and not group/world-writable
 chown root:root "$D"; chmod 755 "$D"
-for h in $(cat /etc/ssh/backup_hosts); do
+read -r hosts < /etc/ssh/backup_hosts   # one line, space-separated (mkrootfs.sh)
+for h in $hosts; do
     mkdir -p "$D/vykar-$h/repo"
     chown root:root "$D/vykar-$h"; chmod 755 "$D/vykar-$h"
     chown "vykar-$h:vykar" "$D/vykar-$h/repo"; chmod 700 "$D/vykar-$h/repo"

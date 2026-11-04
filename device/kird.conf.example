@@ -4,6 +4,6 @@
 # /config overlay. Token must match IR_API_TOKEN in maison's .env.
 # Off unless KIRD_ENABLE=1; after turning it on, on the box: /etc/init.d/kird
 KIRD_ENABLE=0
-KIRD_URL=http://192.168.1.40:3033/api/ir/key
+KIRD_URL=http://<maison host>:3033/api/ir/key
 KIRD_TOKEN=change-me
 KIRD_DEVICE=/dev/input/event0

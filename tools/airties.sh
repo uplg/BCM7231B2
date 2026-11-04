@@ -8,7 +8,7 @@ BAUD_RATE="${BAUD_RATE:-115200}"
 SERIAL_PORT="${SERIAL_PORT:-}"
 
 if [ -z "$SERIAL_PORT" ]; then
-    SERIAL_PORT=$(ls /dev/cu.usbserial-* 2>/dev/null | head -1)
+    for p in /dev/cu.usbserial-*; do [ -e "$p" ] && SERIAL_PORT=$p && break; done
 fi
 
 case "${1:-connect}" in

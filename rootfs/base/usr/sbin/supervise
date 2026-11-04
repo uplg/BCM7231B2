@@ -1,0 +1,9 @@
+#!/bin/sh
+# supervise <command> [args]: run the command in the foreground, start it again 2 s after it
+# exits. For the daemons rcS needs before it ends (syslogd, klogd): init starts its respawn lines
+# only once rcS is done. The restarts go to the kernel log (dmesg), which needs no syslogd.
+while :; do
+    "$@"
+    echo "<4>supervise: $1 exited ($?), restarting" > /dev/kmsg
+    sleep 2
+done

@@ -11,7 +11,8 @@ tmp=$(mktemp) || exit 1
 # Non-zero exit bits flag warnings: the JSON says what they are
 smartctl -j -i -H -A "$DEV" > "$tmp"
 [ -s "$tmp" ] || { rm -f "$tmp"; exit 1; }
-for h in $(cat /etc/ssh/backup_hosts); do
+read -r hosts < /etc/ssh/backup_hosts   # one line, space-separated (mkrootfs.sh)
+for h in $hosts; do
     c="$D/vykar-$h"
     cp "$tmp" "$c/.disk-health.tmp" && chmod 644 "$c/.disk-health.tmp" && mv -f "$c/.disk-health.tmp" "$c/disk-health"
 done

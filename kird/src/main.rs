@@ -2,7 +2,7 @@
 //! maison backend over plain HTTP on the LAN.
 //!
 //! Config via environment (set by /etc/init.d/kird from /etc/kird.conf):
-//!   KIRD_URL     e.g. http://192.168.1.40:3033/api/ir/key
+//!   KIRD_URL     e.g. http://<maison host>:3033/api/ir/key
 //!   KIRD_TOKEN   bearer token expected by maison
 //!   KIRD_DEVICE  input device (default /dev/input/event0)
 //!

@@ -4,6 +4,8 @@
 # wpa_supplicant with the internal TLS/crypto (no OpenSSL): WPA2-PSK + SAE.
 # Output: /output/wpa_supplicant, /output/wpa_cli, /output/wpa_passphrase
 set -e
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh"
 
 WPA_VERSION="${WPA_VERSION:?WPA_VERSION not set}"
 LIBNL_VERSION="${LIBNL_VERSION:?LIBNL_VERSION not set}"
@@ -20,14 +22,8 @@ STRIP="${CROSS}-strip"
 
 echo "wpa_supplicant ${WPA_VERSION} + libnl ${LIBNL_VERSION} — static MIPS32 R1"
 
-for pair in "$WPA_TARBALL $WPA_URL" "$LIBNL_TARBALL $LIBNL_URL"; do
-    set -- $pair
-    if [ ! -f "/dl/$1" ]; then
-        echo "[*] Downloading $2 ..."
-        wget -q -O "/dl/$1.part" "$2"
-        mv "/dl/$1.part" "/dl/$1"
-    fi
-done
+fetch "$WPA_TARBALL" "$WPA_URL"
+fetch "$LIBNL_TARBALL" "$LIBNL_URL"
 
 BUILDDIR=/tmp/wpa
 STAGE="$BUILDDIR/stage"

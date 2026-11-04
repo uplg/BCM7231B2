@@ -15,7 +15,7 @@ ifconfig wlan0 up 2>/dev/null || true
 # interrupt and the timers: it starved under the backups' load on 2026-10-25, with all of the
 # WiFi on it. Measured 2026-11-04 at 20 MB/s of raw TCP: CPU0 27 % busy (was 57 %), CPU1 64 %,
 # same throughput. Set again each time wlan0 is (RPS is per interface).
-for irq in $(awk -F: '/ehci_hcd/ {print $1 + 0}' /proc/interrupts); do
+awk -F: '/ehci_hcd/ {print $1 + 0}' /proc/interrupts | while read -r irq; do
     echo 2 > "/proc/irq/$irq/smp_affinity" 2>/dev/null
 done
 echo 1 > /sys/class/net/wlan0/queues/rx-0/rps_cpus 2>/dev/null

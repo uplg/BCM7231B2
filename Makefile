@@ -30,13 +30,16 @@ OUT   := build_output
 STAMP := build
 DL    := build/dl
 
-# Device / host network (direct Ethernet)
-DEVICE_IP ?= 192.168.2.1
+# The box for SSH and flashing: an SSH host (an alias in ~/.ssh/config, which holds its real
+# address) or an address. DEVICE=192.168.2.1 reaches it over the recovery cable.
+DEVICE    ?= airties
+# Recovery over a direct Ethernet cable: the box's fallback address (and CFE's), this Mac's
+CFE_IP    ?= 192.168.2.1
 HOST_IP   ?= 192.168.2.2
 TFTP_DIR  ?= /private/tftpboot
 
 # keepalive: reboot -f drops the link without a FIN, give up within 15 s
-SSH := ssh -o ServerAliveInterval=5 -o ServerAliveCountMax=3 root@$(DEVICE_IP)
+SSH := ssh -o ServerAliveInterval=5 -o ServerAliveCountMax=3 root@$(DEVICE)
 
 DOCKER_RUN = docker run --rm --platform linux/amd64 \
 	-v "$(CURDIR)":/work \
@@ -59,7 +62,7 @@ TOOL_BINS := $(addprefix $(OUT)/,$(TOOLS))
 
 .PHONY: help all builder kernel busybox mtdutils tools wpa kird rootfs ubi flash-all \
         e2fsprogs openssh smartctl \
-        tftp cfe-help flash-rootfs flash-kernel check-overlay connect \
+        tftp cfe-help flash-rootfs flash-kernel check-overlay outdated connect \
         clean kernel-clean distclean
 
 .DEFAULT_GOAL := help
@@ -69,7 +72,7 @@ help: ## Show this help
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "  Variables: KERNEL_VERSION=$(KERNEL_VERSION)  DVB=$(DVB)  BUSYBOX_VERSION=$(BUSYBOX_VERSION)"
-	@echo "             OPENSSH_VERSION=$(OPENSSH_VERSION)  DEVICE_IP=$(DEVICE_IP)"
+	@echo "             OPENSSH_VERSION=$(OPENSSH_VERSION)  DEVICE=$(DEVICE)"
 
 all: kernel ubi ## Build everything flashable (kernel + rootfs UBI image)
 
@@ -180,7 +183,7 @@ tftp: ## Copy vmlinuz + the padded rootfs UBI image to $(TFTP_DIR) and start mac
 cfe-help: ## Print the CFE flash commands (first flash / recovery)
 	@echo ""
 	@echo "In the CFE console (Ctrl+C during boot):"
-	@echo "  CFE> ifconfig eth0 -addr=$(DEVICE_IP) -mask=255.255.255.0 -gw=$(HOST_IP)"
+	@echo "  CFE> ifconfig eth0 -addr=$(CFE_IP) -mask=255.255.255.0 -gw=$(HOST_IP)"
 	@echo "  CFE> flash $(HOST_IP):rootfs-cfe.ubi nandflash0.rootfs -noheader"
 	@echo "  CFE> flash $(HOST_IP):vmlinuz nandflash0.kernel -noheader"
 	@echo "  CFE> boot nandflash0.kernel:"
@@ -205,8 +208,9 @@ UBI_TOOLS = ubiformat ubimkvol ubiupdatevol ubirename ubirmvol
 UBIFS_OPTS = -m 2048 -e 126976 -c 190 -x lzo -F -U
 
 ubi: rootfs ## Pack new_rootfs/ as UBIFS -> rootfs.ubifs, and as a whole mtd5 UBI image -> rootfs.ubi (CFE)
-	@# Guard: a make all on 2026-11-04 left a 1.6 MB rootfs.ubifs for a 13 MB tree (8.7 MB when
-	@# rebuilt), cause unknown. LZO keeps ~2/3 of these static binaries: under 30 %, refuse.
+	@# Guard: on 2026-11-04 a rootfs.ubifs came out 1.6 MB for a 13 MB tree (8.7 MB when rebuilt),
+	@# most likely a container of a cancelled build still writing. LZO keeps ~2/3 of these static
+	@# binaries: under 30 %, refuse.
 	$(DOCKER_RUN) sh -c 'mkfs.ubifs $(UBIFS_OPTS) -r new_rootfs -o rootfs.ubifs && sync && \
 	    t=$$(du -sk new_rootfs | cut -f1) && u=$$(( $$(stat -c %s rootfs.ubifs) / 1024 )) && \
 	    { [ $$(( u * 100 / t )) -ge 30 ] || { echo "!! rootfs.ubifs is $$u KB for a $$t KB tree: truncated?"; rm -f rootfs.ubifs; exit 1; }; } && \
@@ -222,23 +226,23 @@ ROOTFS_UPDATE = cd /dev/shm && chmod +x busybox $(UBI_TOOLS) && \
 
 flash-rootfs: ## Flash the rootfs (UBI volume swap on mtd5) over SSH, then reboot
 	@test -f rootfs.ubifs || { echo "!! rootfs.ubifs missing, run: make ubi"; exit 1; }
-	@echo ">>> Flashing rootfs (mtd5) on $(DEVICE_IP) in 3s, Ctrl+C to abort"; sleep 3
-	scp rootfs.ubifs $(OUT)/busybox $(addprefix $(OUT)/,$(UBI_TOOLS)) root@$(DEVICE_IP):/dev/shm/
+	@echo ">>> Flashing rootfs (mtd5) on $(DEVICE) in 3s, Ctrl+C to abort"; sleep 3
+	scp rootfs.ubifs $(OUT)/busybox $(addprefix $(OUT)/,$(UBI_TOOLS)) root@$(DEVICE):/dev/shm/
 	@# reboot -f drops the link: ssh then exits 255, a failure before it exits 1
 	$(SSH) '$(ROOTFS_UPDATE) && ./busybox reboot -f' || [ $$? -eq 255 ]
 
 flash-kernel: ## Flash build_output/vmlinuz to mtd4 over SSH, then reboot (CFE recovers if it fails)
 	@test -f $(OUT)/vmlinuz || { echo "!! $(OUT)/vmlinuz missing, run: make kernel"; exit 1; }
-	@echo ">>> Flashing KERNEL (mtd4) on $(DEVICE_IP) in 5s, Ctrl+C to abort"; sleep 5
-	scp $(OUT)/vmlinuz $(OUT)/flash_erase $(OUT)/nandwrite root@$(DEVICE_IP):/dev/shm/
+	@echo ">>> Flashing KERNEL (mtd4) on $(DEVICE) in 5s, Ctrl+C to abort"; sleep 5
+	scp $(OUT)/vmlinuz $(OUT)/flash_erase $(OUT)/nandwrite root@$(DEVICE):/dev/shm/
 	$(SSH) 'cd /dev/shm && chmod +x flash_erase nandwrite && ./flash_erase -q /dev/mtd4 0 0 && \
 	    ./nandwrite -q -p /dev/mtd4 vmlinuz && sync && reboot' || [ $$? -eq 255 ]
 
 flash-all: ## Flash kernel (mtd4) and rootfs (mtd5) over SSH, then reboot once
 	@test -f $(OUT)/vmlinuz -a -f rootfs.ubifs || { echo "!! run: make kernel ubi"; exit 1; }
-	@echo ">>> Flashing KERNEL + rootfs on $(DEVICE_IP) in 5s, Ctrl+C to abort"; sleep 5
+	@echo ">>> Flashing KERNEL + rootfs on $(DEVICE) in 5s, Ctrl+C to abort"; sleep 5
 	scp $(OUT)/vmlinuz rootfs.ubifs $(OUT)/busybox $(OUT)/flash_erase $(OUT)/nandwrite \
-	    $(addprefix $(OUT)/,$(UBI_TOOLS)) root@$(DEVICE_IP):/dev/shm/
+	    $(addprefix $(OUT)/,$(UBI_TOOLS)) root@$(DEVICE):/dev/shm/
 	$(SSH) 'cd /dev/shm && chmod +x flash_erase nandwrite && ./flash_erase -q /dev/mtd4 0 0 && \
 	    ./nandwrite -q -p /dev/mtd4 vmlinuz && $(ROOTFS_UPDATE) && ./busybox reboot -f' || [ $$? -eq 255 ]
 
@@ -249,6 +253,12 @@ check-overlay: ## List the files the box's /config overlays hold, flagging those
 	@$(SSH) 'cd /config/overlay && find etc root ! -type d' | while read -r f; do \
 	    if [ -e "new_rootfs/$$f" ] || [ -L "new_rootfs/$$f" ]; then echo "  HIDES IMAGE  /$$f"; \
 	    else echo "  box only     /$$f"; fi; done
+
+outdated: ## Compare every pinned version with the latest upstream release (network, read-only)
+	@KERNEL_VERSION=$(KERNEL_VERSION) BUSYBOX_VERSION=$(BUSYBOX_VERSION) MTDUTILS_VERSION=$(MTDUTILS_VERSION) \
+	 WPA_VERSION=$(WPA_VERSION) LIBNL_VERSION=$(LIBNL_VERSION) E2FSPROGS_VERSION=$(E2FSPROGS_VERSION) \
+	 OPENSSH_VERSION=$(OPENSSH_VERSION) ZLIB_VERSION=$(ZLIB_VERSION) SMARTMONTOOLS_VERSION=$(SMARTMONTOOLS_VERSION) \
+	 bash scripts/outdated.sh
 
 connect: ## Open the UART console (picocom, logs to logs/)
 	tools/airties.sh connect

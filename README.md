@@ -86,7 +86,9 @@ binaries, BusyBox links, accounts, `sshd_config`, keys, firmware version.
 
 Boot: `rcS` mounts, brings up `/config` and its overlays, the network,
 syslog, WiFi and the backup disk; `init` then starts sshd, ntpd and crond
-from `inittab` and restarts them if they exit. Files rewritten at run time
+from `inittab` and restarts them if they exit. syslogd and klogd are needed
+before `rcS` ends, when `init` starts nothing yet: `/usr/sbin/supervise`
+keeps them up instead. Files rewritten at run time
 (`resolv.conf`, the banner behind `/etc/issue` and `/etc/motd`) live in RAM,
 never in flash.
 
@@ -133,14 +135,24 @@ across reflashes. Console login (UART): root with `device/root-password`.
 
 ### Iteration (box already running this firmware)
 
-The box carries its own `flash_erase`/`nandwrite` and UBI tools, no CFE needed:
+The box carries its own `flash_erase`/`nandwrite` and UBI tools, no CFE needed.
+The targets reach it as `DEVICE` (default `airties`): an SSH host alias, so its
+address stays in your `~/.ssh/config`:
+
+```
+Host airties
+    HostName <the box's LAN address>
+    User root
+    IdentityFile ~/.ssh/id_ed25519
+```
 
 ```bash
 make ubi flash-rootfs         # rebuild rootfs -> new UBI volume, atomic swap -> reboot
 make kernel flash-kernel      # rebuild kernel -> flash mtd4 via SSH -> reboot
 make all flash-all            # both, one reboot
-make flash-all DEVICE_IP=<wlan0 address>   # same over WiFi
-make check-overlay DEVICE_IP=<box>         # what the /config overlays hide of the image
+make check-overlay            # what the /config overlays hide of the image
+make outdated                 # every pinned version against the latest upstream release
+make flash-all DEVICE=192.168.2.1          # over the recovery cable instead of WiFi
 ```
 
 The NAND is reached through UBI only (bad blocks, wear levelling, power cuts):
@@ -251,7 +263,8 @@ only ever sees ciphertext). Pieces, mostly started by `/etc/init.d/backup`
   every chroot as `disk-health`, for the servers' monitoring to read over SFTP.
 - **Logs**: once the disk is up, syslog goes to
   `/srv/backup/system/log/messages` (5 × 2 MB, `tail` it: `logread` has no
-  buffer then), so a hang no longer takes the evidence with it.
+  buffer then), so a hang no longer takes the evidence with it. The backup
+  script flags it and stops syslogd; `supervise` starts it again on the disk.
 - **WiFi watch** (any box with WiFi): `/usr/sbin/wifi-watch` pings the
   gateway every minute; 3 minutes without an answer restart WiFi, 8 reboot
   cleanly. The hardware watchdog only catches a hung kernel, not a dead link.
@@ -260,7 +273,7 @@ only ever sees ciphertext). Pieces, mostly started by `/etc/init.d/backup`
 
 ```bash
 make e2fsprogs smartctl all
-make flash-all DEVICE_IP=<box>
+make flash-all
 # once, on the box: format the disk (destroys it)
 ssh root@<box> 'mke2fs -t ext4 -L backup -m 0 -T largefile /dev/sda && reboot'
 # on a tailnet node of the LAN: route the box's address (approve it in the

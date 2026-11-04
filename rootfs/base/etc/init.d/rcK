@@ -2,14 +2,15 @@
 # Shutdown (inittab): stop the services, then take the backup disk down cleanly before init
 # kills what is left. Init does not respawn anything while this runs.
 echo "[shutdown] Stopping services..."
-killall wifi-watch kird crond ntpd 2>/dev/null
+# the supervise loops first, or they would start syslogd and klogd again
+killall supervise wifi-watch kird crond ntpd 2>/dev/null
 # the SFTP sessions hold files open on the backup disk
 killall sshd sshd-session 2>/dev/null
 killall wpa_supplicant udhcpc 2>/dev/null
 sync
 if mountpoint -q /srv/backup; then
     echo "[shutdown] Unmounting /srv/backup..."
-    killall syslogd 2>/dev/null   # it writes its log on the disk
+    killall syslogd klogd 2>/dev/null   # syslogd writes its log on the disk
     sleep 1
     umount /srv/backup 2>/dev/null || mount -o remount,ro /srv/backup
 fi

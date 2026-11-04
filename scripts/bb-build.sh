@@ -3,6 +3,8 @@
 # Toolchain is baked into the airties-builder image; tarballs cached in /dl.
 # Output: /output/busybox
 set -e
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh"
 
 BUSYBOX_VERSION="${BUSYBOX_VERSION:?BUSYBOX_VERSION not set}"
 TARBALL="busybox-${BUSYBOX_VERSION}.tar.bz2"
@@ -14,11 +16,7 @@ export CROSS_COMPILE="${CROSS}-"
 
 echo "BusyBox ${BUSYBOX_VERSION} — static musl MIPS32 R1"
 
-if [ ! -f "/dl/$TARBALL" ]; then
-    echo "[*] Downloading $URL ..."
-    wget -q -O "/dl/$TARBALL.part" "$URL"
-    mv "/dl/$TARBALL.part" "/dl/$TARBALL"
-fi
+fetch "$TARBALL" "$URL"
 
 BUILDDIR=/tmp/bb
 rm -rf "$BUILDDIR"; mkdir -p "$BUILDDIR"

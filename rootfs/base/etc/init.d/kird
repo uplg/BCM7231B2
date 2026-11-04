@@ -2,6 +2,7 @@
 # kird: Ruwido remote -> maison HTTP bridge. Off unless /etc/kird.conf sets KIRD_ENABLE=1 (an
 # on-box edit persists via the /config overlay; then run this script). Idempotent.
 [ -x /usr/sbin/kird ] && [ -f /etc/kird.conf ] || exit 0
+# shellcheck source=/dev/null  # device/kird.conf, baked at image build
 . /etc/kird.conf
 [ "$KIRD_ENABLE" = 1 ] || exit 0
 # The real daemon only: a bare `pidof kird` also matches this script (its comm is "kird" too)

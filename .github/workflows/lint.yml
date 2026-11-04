@@ -1,0 +1,76 @@
+name: lint
+
+# ShellCheck on every shell script of the repo (rootfs/, scripts/, tools/), actionlint on the
+# workflows. Only when one of them, or the lint setup, changes.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "rootfs/**"
+      - "scripts/**"
+      - "tools/**"
+      - ".shellcheckrc"
+      - ".github/workflows/**"
+  pull_request:
+    paths:
+      - "rootfs/**"
+      - "scripts/**"
+      - "tools/**"
+      - ".shellcheckrc"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    env:
+      # Pinned and verified. ShellCheck publishes no checksum file: this is the sha256 of its
+      # v0.11.0 release asset. actionlint's comes from its release's checksums.txt.
+      SHELLCHECK_VERSION: v0.11.0
+      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install ShellCheck and actionlint
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSLo shellcheck.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSLo actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          sha256sum -c <<EOF
+          ${SHELLCHECK_SHA256}  shellcheck.tar.xz
+          ${ACTIONLINT_SHA256}  actionlint.tar.gz
+          EOF
+          tar -xJf shellcheck.tar.xz --strip-components=1 "shellcheck-${SHELLCHECK_VERSION}/shellcheck"
+          tar -xzf actionlint.tar.gz actionlint
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: ShellCheck
+        run: |
+          shellcheck --version | sed -n 2p
+          mapfile -t files < <(grep -rlE '^#!(/bin/sh|/bin/bash|/usr/bin/env (ba)?sh)' rootfs scripts tools | sort)
+          echo "${#files[@]} scripts"
+          rc=0
+          shellcheck -f json1 "${files[@]}" > "$RUNNER_TEMP/shellcheck.json" || rc=$?
+          # Each finding as an annotation on its line in the diff
+          jq -r '.comments[] | "::\(if .level == "error" then "error" elif .level == "warning" then "warning" else "notice" end) file=\(.file),line=\(.line),endLine=\(.endLine),col=\(.column),endColumn=\(.endColumn),title=SC\(.code)::\(.message)"' \
+            "$RUNNER_TEMP/shellcheck.json"
+          # and readable in the log
+          [ "$rc" -eq 0 ] || shellcheck "${files[@]}"
+          exit "$rc"
+
+      - name: actionlint
+        run: actionlint -color

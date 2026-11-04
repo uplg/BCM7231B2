@@ -6,6 +6,8 @@
 # the post-quantum mlkem/sntrup key exchanges — all built in.
 # Output: /output/sshd, /output/sshd-session, /output/sshd-auth, /output/ssh-keygen
 set -e
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh"
 
 OPENSSH_VERSION="${OPENSSH_VERSION:?OPENSSH_VERSION not set}"
 ZLIB_VERSION="${ZLIB_VERSION:?ZLIB_VERSION not set}"
@@ -19,14 +21,8 @@ PREFIX=/tmp/ossh/sysroot
 
 echo "OpenSSH ${OPENSSH_VERSION} — static MIPS32 R1"
 
-for pair in "$TARBALL $URL" "$ZTARBALL $ZURL"; do
-    set -- $pair
-    if [ ! -f "/dl/$1" ]; then
-        echo "[*] Downloading $2 ..."
-        wget -q -O "/dl/$1.part" "$2"
-        mv "/dl/$1.part" "/dl/$1"
-    fi
-done
+fetch "$TARBALL" "$URL"
+fetch "$ZTARBALL" "$ZURL"
 
 BUILDDIR=/tmp/ossh
 rm -rf "$BUILDDIR"; mkdir -p "$BUILDDIR" "$PREFIX"

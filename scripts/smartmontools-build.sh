@@ -4,6 +4,8 @@
 # where the servers' backup monitor reads them.
 # Output: /output/smartctl
 set -e
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh"
 
 SMARTMONTOOLS_VERSION="${SMARTMONTOOLS_VERSION:?SMARTMONTOOLS_VERSION not set}"
 TARBALL="smartmontools-${SMARTMONTOOLS_VERSION}.tar.gz"
@@ -13,11 +15,7 @@ CROSS="$(cat /opt/cross-prefix)"
 
 echo "smartmontools ${SMARTMONTOOLS_VERSION} — static MIPS32 R1"
 
-if [ ! -f "/dl/$TARBALL" ]; then
-    echo "[*] Downloading $URL ..."
-    wget -q -O "/dl/$TARBALL.part" "$URL"
-    mv "/dl/$TARBALL.part" "/dl/$TARBALL"
-fi
+fetch "$TARBALL" "$URL"
 
 BUILDDIR=/tmp/smart
 rm -rf "$BUILDDIR"; mkdir -p "$BUILDDIR"

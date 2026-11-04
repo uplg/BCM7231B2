@@ -102,9 +102,12 @@ if [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]; then
 fi
 ip -4 addr show eth0 2>/dev/null | grep -q inet || ifconfig eth0 192.168.2.1 netmask 255.255.255.0 up 2>/dev/null
 
+# syslogd and klogd, kept up by supervise; the loggers below need the socket
 step syslog
-syslogd -C256
-klogd
+/usr/sbin/supervise /usr/sbin/syslogd-run </dev/null >/dev/null 2>&1 &
+/usr/sbin/supervise klogd -n </dev/null >/dev/null 2>&1 &
+n=0
+while [ ! -S /dev/log ] && [ "$n" -lt 20 ]; do usleep 100000; n=$((n + 1)); done
 
 # WiFi, kird and the backup target, after syslogd (they log through it). Backgrounded with fds
 # detached from the console: getty's vhangup() on ttyS0 would otherwise kill them once rcS ends
