@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?L=C3=A9onard?= <leonard@synthe.se>
+Date: Wed, 4 Nov 2026 10:52:16 +0100
+Subject: [PATCH 6/6] MIPS: BMIPS: Select SYS_SUPPORTS_ZBOOT
+
+BMIPS_GENERIC boards boot an ELF image from flash, and the kernel
+partition is often small: the AirTies AIR 7310T (BCM7231) leaves 7 MB
+to it, which a vmlinux with wireless support outgrows (9 MB stripped),
+while the gzip-compressed vmlinuz takes 4 MB. CFE boots the
+self-decompressing vmlinuz ELF just like the raw vmlinux.
+
+Select SYS_SUPPORTS_ZBOOT, as other MIPS platforms do. As there, "make"
+then builds vmlinuz in addition to vmlinux; vmlinux is unchanged.
+
+Tested on a BCM7231 (BMIPS4380, little endian) booted by CFE.
+---
+ arch/mips/Kconfig | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arch/mips/Kconfig b/arch/mips/Kconfig
+index d7c67ce..7590d50 100644
+--- a/arch/mips/Kconfig
++++ b/arch/mips/Kconfig
+@@ -270,6 +270,7 @@ config BMIPS_GENERIC
+ 	select SYS_SUPPORTS_LITTLE_ENDIAN
+ 	select SYS_SUPPORTS_BIG_ENDIAN
+ 	select SYS_SUPPORTS_HIGHMEM
++	select SYS_SUPPORTS_ZBOOT
+ 	select SYS_HAS_CPU_BMIPS32_3300
+ 	select SYS_HAS_CPU_BMIPS4350
+ 	select SYS_HAS_CPU_BMIPS4380

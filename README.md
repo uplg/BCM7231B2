@@ -223,17 +223,20 @@ For the backup target: `CONFIG_SECCOMP_FILTER` (OpenSSH's pre-auth sandbox;
 without it the seccomp build of `sshd-auth` drops every connection),
 `CONFIG_PREEMPT`, and zram swap (`CONFIG_BLK_DEV` + `CONFIG_ZRAM`, LZ4).
 
-Board-specific patches applied by `scripts/kbuild.sh` (idempotent, fail loudly
-if an anchor vanishes in a new kernel):
+The kernel changes are a patch series in `kernel/patches/` (`git format-patch`
+form), applied onto the kernel.org tarball by `scripts/kbuild.sh`; a patch that no
+longer applies exactly stops the build. `upstream/` holds the ones written for
+mainline, `local/` the board-only ones; `kernel/patches/README.md` has the
+status of each and what is left to check before sending any (none is sent):
 
-- **PHY ID 0x600d8690** added to `bcm7xxx` (BCM7231 internal 40nm EPHY,
-  absent upstream)
-- **PHY_POLL forced**: the GENET v2 MAC delivers no link-change interrupts
-- **EEE disabled on GENET v1/v2**: the EEE registers don't exist and reading
-  them raises a fatal GISB bus error
-- **rtw88 USB RX URB resubmitted** after a transient bus error (it was lost
-  for good until a reset)
-- **ZBOOT** enabled for BMIPS_GENERIC (self-decompressing `vmlinuz`)
+- **bcm7xxx**: the BCM7231 internal 40nm EPHY (PHY ID 0x600d8690)
+- **bcmgenet**: no EEE register access on GENET v1/v2 (a fatal GISB bus error
+  at link-up); the PHY polled on v2 (local: no link interrupt reached the MAC)
+- **rtw88 USB**: RX URBs resubmitted after a transient bus error (each one was
+  lost for good until a reset)
+- **BMIPS**: ZBOOT (self-decompressing `vmlinuz`); the AIR 7310T board
+- **brcmstb_gisb**, **libahci**: two spurious boot messages
+- the KIR and DVB drivers hooked into the build (local)
 
 Vendor IRQ numbering is L1-bit + 1: subtract 1 when porting IRQs from the
 stock 3.3.8 kernel to the DTS (GENET 24/25, SATA 40, USB 68-71).

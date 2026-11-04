@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?L=C3=A9onard?= <leonard@synthe.se>
+Date: Wed, 4 Nov 2026 10:49:42 +0100
+Subject: [PATCH 4/6] net: bcmgenet: Do not touch the EEE registers on GENET v1
+ and v2
+
+Since commit a9f31047baca ("net: bcmgenet: Fix EEE implementation"),
+bcmgenet_eee_enable_set() runs on every link change, whatever the GENET
+version: it reads and writes UMAC_EEE_CTRL, TBUF_ENERGY_CTRL and
+RBUF_ENERGY_CTRL. On a GENET v2 (BCM7231), the first link-up then raises
+a fatal GISB bus error.
+
+The ethtool EEE operations already return -EOPNOTSUPP on GENET v1.
+Return early from bcmgenet_eee_enable_set() on v1 and v2, so that link
+changes no longer reach these registers there.
+
+Fixes: a9f31047baca ("net: bcmgenet: Fix EEE implementation")
+---
+ drivers/net/ethernet/broadcom/genet/bcmgenet.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/drivers/net/ethernet/broadcom/genet/bcmgenet.c b/drivers/net/ethernet/broadcom/genet/bcmgenet.c
+index f4cfbff..8e2047b 100644
+--- a/drivers/net/ethernet/broadcom/genet/bcmgenet.c
++++ b/drivers/net/ethernet/broadcom/genet/bcmgenet.c
+@@ -1364,6 +1364,12 @@ void bcmgenet_eee_enable_set(struct net_device *dev, bool enable)
+ 	u32 off = priv->hw_params->tbuf_offset + TBUF_ENERGY_CTRL;
+ 	u32 reg;
+ 
++	/* No EEE control on GENET v1 and v2: touching these registers raises
++	 * a bus error.
++	 */
++	if (GENET_IS_V1(priv) || GENET_IS_V2(priv))
++		return;
++
+ 	if (enable && !priv->clk_eee_enabled) {
+ 		clk_prepare_enable(priv->clk_eee);
+ 		priv->clk_eee_enabled = true;

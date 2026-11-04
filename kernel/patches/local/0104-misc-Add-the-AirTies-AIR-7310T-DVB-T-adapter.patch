@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?L=C3=A9onard?= <leonard@synthe.se>
+Date: Wed, 4 Nov 2026 10:54:22 +0100
+Subject: [PATCH 104/104] misc: Add the AirTies AIR 7310T DVB-T adapter
+
+Hook the AIR 7310T DVB-T driver into the build. The driver itself
+(bcm7231-dvb.c) is copied into drivers/misc/ by the build (kernel/ in
+this repo). Local: upstream would want the MxL101SF frontend as an I2C
+driver of its own and the XPT as a demux driver, both in drivers/media.
+---
+ drivers/misc/Kconfig  | 8 ++++++++
+ drivers/misc/Makefile | 1 +
+ 2 files changed, 9 insertions(+)
+
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index 7364931..a6cf475 100644
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -568,6 +568,14 @@ config MCHP_LAN966X_PCI
+ 	    - lan966x-miim (MDIO_MSCC_MIIM)
+ 	    - lan966x-switch (LAN966X_SWITCH)
+ 
++config DVB_BCM7231
++	tristate "AirTies AIR 7310T DVB-T (BCM7231 XPT + 2x MxL101SF)"
++	depends on DVB_CORE && I2C
++	help
++	  DVB-T adapter of the AirTies AIR 7310T: two MxL101SF frontends
++	  feeding the transport processor (XPT) of the Broadcom BCM7231.
++	  Its programming was reverse engineered from the stock firmware.
++
+ source "drivers/misc/c2port/Kconfig"
+ source "drivers/misc/eeprom/Kconfig"
+ source "drivers/misc/cb710/Kconfig"
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index e8d8d5d..daeb643 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -71,3 +71,4 @@ obj-y				+= keba/
+ obj-y				+= amd-sbi/
+ obj-$(CONFIG_MISC_RP1)		+= rp1/
+ obj-$(CONFIG_INTEL_SSEI)	+= issei/
++obj-$(CONFIG_DVB_BCM7231)	+= bcm7231-dvb.o

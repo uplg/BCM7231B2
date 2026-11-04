@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?L=C3=A9onard?= <leonard@synthe.se>
+Date: Wed, 4 Nov 2026 10:53:29 +0100
+Subject: [PATCH 102/104] MIPS: BMIPS: Add the AirTies AIR 7310T board
+
+Build the device tree of the AirTies AIR 7310T (BCM7231) and offer it
+as the built-in one. The .dts and the BCM7231 .dtsi are copied into
+arch/mips/boot/dts/brcm/ by the build (kernel/ in this repo) until they
+go upstream with the bindings they need.
+---
+ arch/mips/bmips/Kconfig          | 4 ++++
+ arch/mips/boot/dts/brcm/Makefile | 2 ++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/arch/mips/bmips/Kconfig b/arch/mips/bmips/Kconfig
+index 63dfc69..f2d9a51 100644
+--- a/arch/mips/bmips/Kconfig
++++ b/arch/mips/bmips/Kconfig
+@@ -14,6 +14,10 @@ choice
+ config DT_NONE
+ 	bool "None"
+ 
++config DT_AIRTIES_AIR7310T
++	bool "AirTies AIR 7310T"
++	select BUILTIN_DTB
++
+ config DT_BCM93384WVG
+ 	bool "BCM93384WVG Zephyr CPU"
+ 	select BUILTIN_DTB
+diff --git a/arch/mips/boot/dts/brcm/Makefile b/arch/mips/boot/dts/brcm/Makefile
+index 1798209..a3f2a8b 100644
+--- a/arch/mips/boot/dts/brcm/Makefile
++++ b/arch/mips/boot/dts/brcm/Makefile
+@@ -1,4 +1,5 @@
+ # SPDX-License-Identifier: GPL-2.0
++dtb-$(CONFIG_DT_AIRTIES_AIR7310T)	+= bcm7231-airties-7310t.dtb
+ dtb-$(CONFIG_DT_BCM93384WVG)		+= bcm93384wvg.dtb
+ dtb-$(CONFIG_DT_BCM93384WVG_VIPER)	+= bcm93384wvg_viper.dtb
+ dtb-$(CONFIG_DT_BCM96368MVWG)		+= bcm96368mvwg.dtb
+@@ -21,6 +22,7 @@ dtb-$(CONFIG_DT_NONE) += \
+ 	bcm6358-neufbox4-sercomm.dtb \
+ 	bcm6362-neufbox6-sercomm.dtb \
+ 	bcm63268-comtrend-vr-3032u.dtb \
++	bcm7231-airties-7310t.dtb \
+ 	bcm93384wvg.dtb \
+ 	bcm93384wvg_viper.dtb \
+ 	bcm96368mvwg.dtb \

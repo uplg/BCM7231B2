@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?L=C3=A9onard?= <leonard@synthe.se>
+Date: Wed, 4 Nov 2026 10:46:50 +0100
+Subject: [PATCH 2/6] ata: libahci: Warn about masking port_map only when ports
+ are masked
+
+On platform AHCI controllers, ahci_platform_get_resources() sets
+mask_port_map to the ports that have an enabled child node in the device
+tree. A device tree that describes every port of the controller then
+triggers the warning although nothing is masked, as on the BCM7231:
+
+  masking port_map 0x3 -> 0x3
+
+Keep applying the mask, but warn only when it actually drops a port.
+---
+ drivers/ata/libahci.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/ata/libahci.c b/drivers/ata/libahci.c
+index 08ab56e..645c16e 100644
+--- a/drivers/ata/libahci.c
++++ b/drivers/ata/libahci.c
+@@ -544,9 +544,10 @@ void ahci_save_initial_config(struct device *dev, struct ahci_host_priv *hpriv)
+ 
+ 	/* mask_port_map not set means that all ports are available */
+ 	if (hpriv->mask_port_map) {
+-		dev_warn(dev, "masking port_map 0x%lx -> 0x%lx\n",
+-			port_map,
+-			port_map & hpriv->mask_port_map);
++		if (port_map & ~hpriv->mask_port_map)
++			dev_warn(dev, "masking port_map 0x%lx -> 0x%lx\n",
++				 port_map,
++				 port_map & hpriv->mask_port_map);
+ 		port_map &= hpriv->mask_port_map;
+ 	}
+ 

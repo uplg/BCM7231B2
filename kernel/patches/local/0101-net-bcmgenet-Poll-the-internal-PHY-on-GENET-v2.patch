@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?L=C3=A9onard?= <leonard@synthe.se>
+Date: Wed, 4 Nov 2026 10:52:37 +0100
+Subject: [PATCH 101/104] net: bcmgenet: Poll the internal PHY on GENET v2
+
+Local workaround, not for upstream as is: on the BCM7231 (GENET v2) no
+link change interrupt reached the MAC, so the link never came up with
+PHY_MAC_INTERRUPT. Poll the PHY there, as on GENET v5.
+
+The root cause is not known. Whether it is still needed since the
+device tree got the BCM7231 interrupt numbers right (the vendor's are
+the L1 bit + 1) has not been checked.
+---
+ drivers/net/ethernet/broadcom/genet/bcmmii.c | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/net/ethernet/broadcom/genet/bcmmii.c b/drivers/net/ethernet/broadcom/genet/bcmmii.c
+index 0f0dbab..e5ea816 100644
+--- a/drivers/net/ethernet/broadcom/genet/bcmmii.c
++++ b/drivers/net/ethernet/broadcom/genet/bcmmii.c
+@@ -401,9 +401,10 @@ int bcmgenet_mii_probe(struct net_device *dev)
+ 	 * Ethernet MAC ISRs. On GENETv5 there is a hardware issue
+ 	 * that prevents the signaling of link UP interrupts when
+ 	 * the link operates at 10Mbps, so fallback to polling for
+-	 * those versions of GENET.
++	 * those versions of GENET. No link interrupt reaches the MAC on the
++	 * GENETv2 of the BCM7231 either: poll there too.
+ 	 */
+-	if (priv->internal_phy && !GENET_IS_V5(priv))
++	if (priv->internal_phy && !GENET_IS_V5(priv) && !GENET_IS_V2(priv))
+ 		dev->phydev->irq = PHY_MAC_INTERRUPT;
+ 
+ 	/* Indicate that the MAC is responsible for PHY PM */

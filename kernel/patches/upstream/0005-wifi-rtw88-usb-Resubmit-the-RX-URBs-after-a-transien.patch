@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?L=C3=A9onard?= <leonard@synthe.se>
+Date: Wed, 4 Nov 2026 10:51:25 +0100
+Subject: [PATCH 5/6] wifi: rtw88: usb: Resubmit the RX URBs after a transient
+ error
+
+rtw_usb_read_port_complete() resubmits an RX URB only when it completed
+without error. After a transient error (-EPROTO, -EILSEQ, -ETIME,
+-ECOMM, -EOVERFLOW: a glitch on the bus) it returns the buffer to the
+free queue and stops: the URB is not submitted again. Since
+rxcb->rx_skb still points to the returned buffer,
+rtw_usb_rx_resubmit_work() skips it as well. Each glitch thus loses one
+of the RTW_USB_RXCB_NUM (4) RX URBs for good, and after four of them the
+device receives nothing until the interface is reset.
+
+On an RTL8812BU behind the EHCI of a BCM7231, this shows as a slow loss
+of the access point's beacons (fewer and fewer frames get through)
+ending in a beacon loss and a dead link; a monitor interface, which
+multiplies the RX traffic, brought it on within the hour.
+
+Resubmit the URB after a transient error, with a rate-limited warning.
+After a fatal one (URB killed, device gone), do not, but clear
+rxcb->rx_skb so that it no longer points to a buffer of the free queue.
+
+Fixes: a82dfd33d123 ("wifi: rtw88: Add common USB chip support")
+---
+ drivers/net/wireless/realtek/rtw88/usb.c | 20 +++++++++++++++-----
+ 1 file changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/net/wireless/realtek/rtw88/usb.c b/drivers/net/wireless/realtek/rtw88/usb.c
+index 64e1c34..ea1e83a 100644
+--- a/drivers/net/wireless/realtek/rtw88/usb.c
++++ b/drivers/net/wireless/realtek/rtw88/usb.c
+@@ -769,20 +769,30 @@ static void rtw_usb_read_port_complete(struct urb *urb)
+ 		skb_queue_tail(&rtwusb->rx_free_queue, skb);
+ 
+ 		switch (urb->status) {
+-		case -EINVAL:
+-		case -EPIPE:
+-		case -ENODEV:
+-		case -ESHUTDOWN:
+-		case -ENOENT:
+ 		case -EPROTO:
+ 		case -EILSEQ:
+ 		case -ETIME:
+ 		case -ECOMM:
+ 		case -EOVERFLOW:
++			/* A transient error on the bus: resubmit, or the URB
++			 * is lost until the next reset.
++			 */
++			dev_warn_ratelimited(rtwdev->dev,
++					     "rx urb status %d, resubmitting\n",
++					     urb->status);
++			rtw_usb_rx_resubmit(rtwusb, rxcb, GFP_ATOMIC);
++			break;
++		case -EINVAL:
++		case -EPIPE:
++		case -ENODEV:
++		case -ESHUTDOWN:
++		case -ENOENT:
+ 		case -EINPROGRESS:
++			rxcb->rx_skb = NULL;
+ 			break;
+ 		default:
+ 			rtw_err(rtwdev, "status %d\n", urb->status);
++			rxcb->rx_skb = NULL;
+ 			break;
+ 		}
+ 	}

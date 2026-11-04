@@ -3,20 +3,18 @@
 # Invoked by `make kernel` inside the airties-builder image.
 #
 # Mounts (set up by the Makefile):
-#   /work    repo root (kernel/ has DTS, config fragment, debug patch)
-#   /output  build_output/ (vmlinux, vmlinux.bin, vmlinux.bin.gz, kernel_config)
+#   /work    repo root (kernel/: patches, DTS, drivers, config fragments)
+#   /output  build_output/ (vmlinuz, vmlinux, kernel_config)
 #   /dl      tarball cache (kept on host, survives everything)
-#   /kbuild  named Docker volume — extracted source + objects persist here,
+#   /kbuild  named Docker volume: extracted source + objects persist here,
 #            so rebuilds are incremental. `make kernel-clean` drops it.
 #
 # Env: KERNEL_VERSION (required, e.g. 7.3.1), DVB (1: DVB-T adapter), WIFI_DEBUG
 #
-# All source patches are guarded so they apply exactly once even though the
-# tree persists between runs. The DTS files are re-copied every run so DTS
-# iteration only needs `make kernel`.
-
-# The Makefile lines echoed below are literal make syntax: $(CONFIG_...) must not expand
-# shellcheck disable=SC2016
+# The kernel changes are a patch series, kernel/patches/upstream/ (meant for upstream) then
+# kernel/patches/local/ (this board only), applied in order onto the kernel.org tarball. The DTS
+# and the two board drivers are files of their own, copied in on every build, so iterating on
+# them only needs `make kernel`.
 set -e
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
@@ -33,142 +31,34 @@ export CROSS_COMPILE="${CROSS}-"
 
 echo "Linux ${KERNEL_VERSION} for BCM7231 (${CROSS})"
 
-# Fetch + extract (once per version)
+# The patch series. The tree persists between builds, so it records the series it was patched
+# with: a tree patched with another one (or not at all, or halfway) is extracted again, and a
+# patch is never applied twice nor left out. --fuzz=0: a patch that does not apply exactly
+# stops the build rather than landing in the wrong place.
+PATCHES=(/work/kernel/patches/upstream/*.patch /work/kernel/patches/local/*.patch)
+SERIES=$(cat "${PATCHES[@]}" | sha256sum | cut -d' ' -f1)
+if [ -d "$SRC" ] && [ "$(cat "$SRC/.airties-series" 2>/dev/null)" != "$SERIES" ]; then
+    echo "[*] Patch series changed: extracting a fresh tree (full rebuild)..."
+    rm -rf "$SRC"
+fi
 if [ ! -d "$SRC" ]; then
     fetch "$TARBALL" "$URL"
     echo "[*] Extracting to $SRC ..."
     tar xf "/dl/$TARBALL" -C /kbuild
+    for p in "${PATCHES[@]}"; do
+        echo "[*] Applying ${p#/work/kernel/patches/}"
+        patch -d "$SRC" -p1 --forward --fuzz=0 --no-backup-if-mismatch -s < "$p" \
+            || { echo "!! ${p#/work/kernel/patches/} does not apply to Linux ${KERNEL_VERSION}"; exit 1; }
+    done
+    echo "$SERIES" > "$SRC/.airties-series"
 fi
 cd "$SRC"
 
-# Device tree: always refresh (this is the main iteration surface)
-echo "[*] Installing BCM7231 device tree..."
-cp /work/kernel/bcm7231.dtsi /work/kernel/bcm7231-airties-7310t.dts \
-   arch/mips/boot/dts/brcm/
-
-grep -q 'bcm7231-airties-7310t' arch/mips/boot/dts/brcm/Makefile || \
-    echo 'dtb-$(CONFIG_BMIPS_GENERIC) += bcm7231-airties-7310t.dtb' \
-        >> arch/mips/boot/dts/brcm/Makefile
-
-if ! grep -q 'DT_BCM7231_AIRTIES' arch/mips/bmips/Kconfig; then
-    sed -i '/^endchoice/i \
-config DT_BCM7231_AIRTIES\
-\tbool "AirTies AIR 7310T (BCM7231)"\
-\tselect BUILTIN_DTB\
-' arch/mips/bmips/Kconfig
-fi
-
-# Driver: BCM7231 KIR (IR receiver, Ruwido remote) — built-in
-# Register programming engineered from stock nexus.ko (BKIR_*).
-echo "[*] Installing BCM7231 KIR driver..."
+# The files of their own (the patches hook them into Kconfig and the Makefiles)
+echo "[*] Installing the BCM7231 device tree and the KIR and DVB drivers..."
+cp /work/kernel/bcm7231.dtsi /work/kernel/bcm7231-airties-7310t.dts arch/mips/boot/dts/brcm/
 cp /work/kernel/bcm7231-kir.c drivers/input/keyboard/
-
-grep -q 'bcm7231-kir' drivers/input/keyboard/Makefile || \
-    echo 'obj-$(CONFIG_KEYBOARD_BCM7231_KIR) += bcm7231-kir.o' \
-        >> drivers/input/keyboard/Makefile
-
-if ! grep -q 'KEYBOARD_BCM7231_KIR' drivers/input/keyboard/Kconfig; then
-    sed -i '$ i \
-config KEYBOARD_BCM7231_KIR\
-\ttristate "BCM7231 KIR keyboard/IR receiver"\
-\tdepends on INPUT_KEYBOARD\
-\thelp\
-\t  BCM7231 KIR (keyboard/IR receiver) input driver for the\
-\t  AirTies Ruwido remote.  Register programming\
-\t  from the stock nexus.ko blob.\
-' drivers/input/keyboard/Kconfig
-fi
-grep -q 'KEYBOARD_BCM7231_KIR' drivers/input/keyboard/Kconfig || \
-    { echo "!! keyboard/Kconfig patch failed"; exit 1; }
-
-# Driver: AIR 7310T DVB adapter (XPT + 2x MxL101SF) — built-in
-# Frontend + hw-PID-filter demux, reversed from libwydvb.so / nexus.ko.
-echo "[*] Installing BCM7231 DVB driver..."
 cp /work/kernel/bcm7231-dvb.c drivers/misc/
-grep -q 'bcm7231-dvb' drivers/misc/Makefile || \
-    echo 'obj-$(CONFIG_DVB_BCM7231) += bcm7231-dvb.o' \
-        >> drivers/misc/Makefile
-
-if ! grep -q 'DVB_BCM7231' drivers/misc/Kconfig; then
-    sed -i '/^endmenu/i \
-config DVB_BCM7231\
-\ttristate "AirTies AIR 7310T DVB (BCM7231 XPT + MxL101SF)"\
-\tdepends on DVB_CORE && I2C\
-\thelp\
-\t  DVB-T adapter driver for the AirTies AIR 7310T: two MxL101SF\
-\t  frontends feeding the BCM7231 XPT transport processor.\
-\t  Register programming reversed from the stock firmware.\
-' drivers/misc/Kconfig
-fi
-grep -q 'DVB_BCM7231' drivers/misc/Kconfig || \
-    { echo "!! misc/Kconfig patch failed"; exit 1; }
-
-# Patch: BCM7231 internal EPHY (PHY ID 0x600d8690, 40nm like 7346/7362)
-if ! grep -q 'PHY_ID_BCM7231' include/linux/brcmphy.h; then
-    echo "[*] Patching brcmphy.h (PHY_ID_BCM7231)..."
-    sed -i '/#define PHY_ID_BCM7362/a\
-#define PHY_ID_BCM7231\t\t\t0x600d8690' include/linux/brcmphy.h
-fi
-grep -q 'PHY_ID_BCM7231' include/linux/brcmphy.h || { echo "!! brcmphy.h patch failed"; exit 1; }
-
-if ! grep -q 'PHY_ID_BCM7231' drivers/net/phy/bcm7xxx.c; then
-    echo "[*] Patching bcm7xxx.c (driver + mdio table entries)..."
-    sed -i '/BCM7XXX_40NM_EPHY(PHY_ID_BCM7362/a\
-\tBCM7XXX_40NM_EPHY(PHY_ID_BCM7231, "Broadcom BCM7231"),' drivers/net/phy/bcm7xxx.c
-    sed -i '/PHY_ID_BCM7362, 0xfffffff0/a\
-\t{ PHY_ID_BCM7231, 0xfffffff0, },' drivers/net/phy/bcm7xxx.c
-fi
-[ "$(grep -c 'PHY_ID_BCM7231' drivers/net/phy/bcm7xxx.c)" -ge 2 ] || \
-    { echo "!! bcm7xxx.c patch failed"; exit 1; }
-
-# Patch: force PHY polling — GENET v2 MAC delivers no link-change IRQs
-if ! grep -q 'AirTies-: force polling' drivers/net/ethernet/broadcom/genet/bcmmii.c; then
-    echo "[*] Patching bcmmii.c (PHY_POLL)..."
-    sed -i 's/dev->phydev->irq = PHY_MAC_INTERRUPT;/dev->phydev->irq = PHY_POLL; \/* AirTies-: force polling, MAC IRQ broken on BCM7231 *\//' \
-        drivers/net/ethernet/broadcom/genet/bcmmii.c
-fi
-grep -q 'AirTies-: force polling' drivers/net/ethernet/broadcom/genet/bcmmii.c || \
-    { echo "!! bcmmii.c patch failed (anchor changed in this kernel version?)"; exit 1; }
-
-# Patch: skip EEE on GENET v1/v2 — RBUF/TBUF_ENERGY_CTRL don't exist,
-#     reading them raises a fatal GISB bus error at link-up ---
-if ! grep -q 'AirTies-: no EEE' drivers/net/ethernet/broadcom/genet/bcmgenet.c; then
-    echo "[*] Patching bcmgenet.c (skip EEE on v1/v2)..."
-    sed -i '/bcmgenet_eee_enable_set.*bool enable/,/u32 off = priv->hw_params->tbuf_offset/{
-      s/u32 off = priv->hw_params->tbuf_offset/if (GENET_IS_V1(priv) || GENET_IS_V2(priv)) return; \/* AirTies-: no EEE on v1\/v2 *\/\n\tu32 off = priv->hw_params->tbuf_offset/
-    }' drivers/net/ethernet/broadcom/genet/bcmgenet.c
-fi
-grep -q 'AirTies-: no EEE' drivers/net/ethernet/broadcom/genet/bcmgenet.c || \
-    { echo "!! bcmgenet.c EEE patch failed (anchor changed in this kernel version?)"; exit 1; }
-
-# Patch: rtw88 USB loses an RX URB for good on each transient bus error (until a reset)
-python3 /work/kernel/patch_rtw88_usb_rx.py
-grep -q 'AirTies-: resubmit RX URB' drivers/net/wireless/realtek/rtw88/usb.c || \
-    { echo "!! rtw88 usb.c RX resubmit patch failed"; exit 1; }
-
-# Patch: the GISB arbiter's breakpoint IRQ is optional (the driver checks bp_irq > 0) but was
-# fetched with platform_get_irq(), which logs an error when the SoC has none (BCM7231) ---
-sed -i 's/bp_irq = platform_get_irq(pdev, 2);/bp_irq = platform_get_irq_optional(pdev, 2); \/* AirTies-: optional *\//' \
-    drivers/bus/brcmstb_gisb.c
-grep -q 'AirTies-: optional' drivers/bus/brcmstb_gisb.c || \
-    { echo "!! brcmstb_gisb.c optional bp_irq patch failed"; exit 1; }
-
-# Patch: libahci warned "masking port_map" even when the mask keeps every port (0x3 -> 0x3,
-# the DT lists both ports); warn only when ports are actually masked out ---
-sed -i 's/^\tif (hpriv->mask_port_map) {$/\tif (hpriv->mask_port_map \&\& (port_map \& ~hpriv->mask_port_map)) { \/* AirTies-: warn only when masking *\//' \
-    drivers/ata/libahci.c
-grep -q 'AirTies-: warn only' drivers/ata/libahci.c || \
-    { echo "!! libahci.c port_map warning patch failed"; exit 1; }
-
-# Patch: BMIPS_GENERIC lacks SYS_SUPPORTS_ZBOOT — enable it so we can
-#     build a self-decompressing vmlinuz ELF (raw vmlinux outgrew the 7 MB
-#     mtd4 once WiFi/mac80211 landed; gzip'd it fits with huge margin) ---
-if ! grep -A2 'bool "Broadcom Generic BMIPS kernel"' arch/mips/Kconfig | grep -q SYS_SUPPORTS_ZBOOT; then
-    echo "[*] Patching arch/mips/Kconfig (BMIPS_GENERIC + SYS_SUPPORTS_ZBOOT)..."
-    sed -i 's/^\tbool "Broadcom Generic BMIPS kernel"$/&\n\tselect SYS_SUPPORTS_ZBOOT/' arch/mips/Kconfig
-fi
-grep -A2 'bool "Broadcom Generic BMIPS kernel"' arch/mips/Kconfig | grep -q SYS_SUPPORTS_ZBOOT || \
-    { echo "!! Kconfig ZBOOT patch failed"; exit 1; }
 
 # Firmware baked in via CONFIG_EXTRA_FIRMWARE (repo fw/, mounted at /work/fw)
 for f in rtw88/rtw8822b_fw.bin regulatory.db regulatory.db.p7s; do
