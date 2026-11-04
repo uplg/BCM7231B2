@@ -1,11 +1,12 @@
 # Build output (kernel, busybox, binaries, logs)
-build_output/
+/build_output/
 
 # Makefile stamps + downloaded source tarball cache
-build/
+/build/
 
 # SSH material baked into the rootfs (personal, not for the repo)
 device/authorized_keys
+# Old Dropbear host keys (Dropbear is gone; private keys all the same)
 device/dropbear/
 
 # WiFi credentials baked into the rootfs (personal, not for the repo)
@@ -19,18 +20,17 @@ defaultenv.txt
 
 .ruff_cache/
 
-# Assembled rootfs tree and squashfs image
-new_rootfs/
-new_rootfs.squashfs
+# Assembled rootfs tree
+/new_rootfs/
 
 # Extracted stock firmware rootfs (~143 MB)
-rootfs_extracted/
+/rootfs_extracted/
 
 # Full MTD backup from device (~124 MB)
-backup/
+/backup/
 
 # Build logs
-logs/
+/logs/
 
 # macOS
 .DS_Store

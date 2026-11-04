@@ -1,0 +1,8 @@
+#!/bin/sh
+# Run by ntpd (-S) with "step", "stratum", "unsync" or "periodic". At the first sync: mark the
+# clock set (the backup target waits for it) and refresh the status banner.
+case "$1" in unsync) exit 0 ;; esac
+[ -e /var/run/clock-set ] && exit 0
+touch /var/run/clock-set
+logger -t ntp "clock: $(date -u '+%Y-%m-%d %H:%M:%S') UTC"
+/usr/sbin/status-banner

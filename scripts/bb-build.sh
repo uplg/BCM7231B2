@@ -1,9 +1,7 @@
 #!/bin/bash
-# =============================================================================
 # In-container BusyBox build (static, musl, MIPS32 R1) — invoked by `make busybox`.
 # Toolchain is baked into the airties-builder image; tarballs cached in /dl.
 # Output: /output/busybox
-# =============================================================================
 set -e
 
 BUSYBOX_VERSION="${BUSYBOX_VERSION:?BUSYBOX_VERSION not set}"
@@ -14,9 +12,7 @@ CROSS="$(cat /opt/cross-prefix)"
 export ARCH=mips
 export CROSS_COMPILE="${CROSS}-"
 
-echo "============================================"
-echo "  BusyBox ${BUSYBOX_VERSION} — static musl MIPS32 R1"
-echo "============================================"
+echo "BusyBox ${BUSYBOX_VERSION} — static musl MIPS32 R1"
 
 if [ ! -f "/dl/$TARBALL" ]; then
     echo "[*] Downloading $URL ..."
@@ -33,7 +29,8 @@ echo "[*] Configuring..."
 make defconfig >/dev/null
 
 # Static binary, no HUSH (ash only), no SELinux, no x86-only hwaccel,
-# drop applets we never use on the STB.
+# drop applets we never use on the STB: no network servers but OpenSSH, no modules
+# (everything is built into the kernel).
 sed -i 's/.*CONFIG_STATIC[^_].*/CONFIG_STATIC=y/' .config
 for opt in CONFIG_HUSH CONFIG_HUSH_BASH_COMPAT CONFIG_HUSH_BRACE_EXPANSION \
     CONFIG_HUSH_LINENO_VAR CONFIG_HUSH_BASH_SOURCE_CURDIR CONFIG_HUSH_INTERACTIVE \
@@ -48,7 +45,10 @@ for opt in CONFIG_HUSH CONFIG_HUSH_BASH_COMPAT CONFIG_HUSH_BRACE_EXPANSION \
     CONFIG_SELINUX CONFIG_FEATURE_SELINUX \
     CONFIG_SHA1_HWACCEL CONFIG_SHA256_HWACCEL CONFIG_SHA3_SMALL \
     CONFIG_DPKG CONFIG_RPM CONFIG_FBSET CONFIG_LOADFONT CONFIG_SETFONT \
-    CONFIG_LPD CONFIG_LPR CONFIG_SENDMAIL CONFIG_DEVMEM CONFIG_INSTALL; do
+    CONFIG_LPD CONFIG_LPR CONFIG_SENDMAIL CONFIG_DEVMEM CONFIG_INSTALL \
+    CONFIG_TELNET CONFIG_TELNETD CONFIG_HTTPD CONFIG_UDHCPD CONFIG_DHCPRELAY CONFIG_DUMPLEASES \
+    CONFIG_TFTP CONFIG_TFTPD CONFIG_FTPD CONFIG_FTPGET CONFIG_FTPPUT CONFIG_INETD CONFIG_FAKEIDENTD \
+    CONFIG_INSMOD CONFIG_RMMOD CONFIG_LSMOD CONFIG_MODPROBE CONFIG_DEPMOD CONFIG_MODINFO; do
     sed -i "s/^${opt}=y/# ${opt} is not set/" .config
 done
 

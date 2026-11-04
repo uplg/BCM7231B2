@@ -36,9 +36,8 @@
 		 * ubi.mtd/root=ubi0:rootfs: the rootfs is UBIFS in the UBI volume named
 		 * "rootfs" on mtd5 (RootFS), mounted read-only by that name (UBI
 		 * handles the NAND's bad blocks, mtdblock did not). By name, not by
-		 * volume id: an update writes "rootfs_new" and swaps the names; a
-		 * squashfs through ubiblock was found by id (ubiblock0_<id>) and that
-		 * swap left the kernel without a root (panic loop, 2026-10-25). */
+		 * volume id: an update writes "rootfs_new" and swaps the names (a root
+		 * found by id lost it in such a swap: panic loop, 2026-10-25). */
 		bootargs = "console=ttyS0,115200 ubi.mtd=RootFS root=ubi0:rootfs rootfstype=ubifs ro init=/sbin/init libata.force=1.5Gbps rcutree.kthread_prio=10 rtw88_usb.switch_usb_mode=0";
 		stdout-path = &uart0;
 	};

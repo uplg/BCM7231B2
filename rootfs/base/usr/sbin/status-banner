@@ -1,0 +1,38 @@
+#!/bin/sh
+# The box at a glance (/var/run/issue, behind /etc/issue and /etc/motd): run at the end of the
+# boot, on a DHCP lease, once the clock is set and once the backup disk is mounted.
+. /etc/firmware-release
+model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null)
+role=""; [ -x /etc/init.d/backup ] && role=" · off-site backup target"
+ip4() { ip -4 -o addr show "$1" 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4; exit}'; }
+net=""
+for i in wlan0 eth0; do
+    # a live link only: eth0 keeps its fallback address with no cable plugged in
+    [ "$(cat /sys/class/net/$i/carrier 2>/dev/null)" = 1 ] || continue
+    a=$(ip4 "$i"); [ -n "$a" ] || continue
+    band=""
+    if [ "$i" = wlan0 ]; then
+        f=$(wpa_cli -i wlan0 status 2>/dev/null | sed -n 's/^freq=//p')
+        [ -n "$f" ] && band=" ($([ "$f" -gt 4000 ] && echo 5 || echo 2.4) GHz)"
+    fi
+    net="${net:+$net · }$i $a$band"
+done
+backup="not mounted"
+if mountpoint -q /srv/backup; then
+    backup=$(df -k /srv/backup | awk 'NR == 2 {printf "%d %% of %.0f GiB used", $5, $2 / 1048576}')
+    dev=$(awk '$2 == "/srv/backup" {print $1}' /proc/mounts)
+    smartctl -H "$dev" 2>/dev/null | grep -q PASSED && backup="$backup · SMART ok"
+fi
+mem=$(awk '/^MemTotal/ {t = $2} /^MemAvailable/ {a = $2} END {printf "%d MB free of %d", a / 1024, t / 1024}' /proc/meminfo)
+since=""
+[ "$(date +%Y)" -ge 2026 ] && since=" · up since $(date -u -d @$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) )) '+%Y-%m-%d %H:%M') UTC"
+{
+    echo
+    echo "  $model$role"
+    echo "  ──────────────────────────────────────────────────────"
+    echo "  firmware  $FIRMWARE ($BUILT) · Linux $(uname -r)"
+    echo "  network   ${net:-none yet}"
+    [ -x /etc/init.d/backup ] && echo "  backup    $backup"
+    echo "  system    $mem$since"
+    echo
+} > /var/run/issue.tmp && mv /var/run/issue.tmp /var/run/issue

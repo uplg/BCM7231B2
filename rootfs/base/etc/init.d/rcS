@@ -1,0 +1,137 @@
+#!/bin/sh
+# AirTies: system init (inittab sysinit). Mounts, /config, network, the boot-time services; init
+# itself then starts and keeps up sshd, crond and ntpd (inittab respawn).
+# Each phase also goes to the kernel log: the serial console prints it even while userspace output
+# is held back (a stray XOFF on the line held every "[init]" line of a boot on 2026-10-25), and
+# syslog keeps it. The last "rcS:" line of a stuck boot says where it stuck.
+step() { echo "<6>rcS: $*" > /dev/kmsg; }
+step start
+stty -ixon -ixoff < /dev/console 2>/dev/null
+echo "[init] Starting AirTies..."
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /dev/shm
+mount -t tmpfs -o size=10M tmpfs /tmp
+mount -t tmpfs -o size=2M tmpfs /var
+mkdir -p /var/run /var/log /var/tmp /var/lib /var/empty /var/spool/cron/crontabs
+chmod 755 /var/empty
+# /etc/resolv.conf points here: DHCP rewrites it in RAM, never in flash. Until a lease:
+printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /var/run/resolv.conf
+
+# Boot guard: rcS must reach its end within 3 minutes, whatever holds it. On 2026-10-25 a boot
+# stopped after eth0 (the disk had not answered): no WiFi, no sshd, nothing to reboot it, until a
+# power cycle. The watchdog cannot see that: its daemon pets from its own process.
+( sleep 180; [ -e /var/run/rcS.done ] || { step "stuck for 180 s, rebooting"; reboot -f; } ) \
+    </dev/null >/dev/null 2>&1 &
+
+# Hardware watchdog (bcm7038-wdt): 60 s timeout, petted every 10 s, from now on: a kernel hang
+# anywhere in the boot stops the petting -> hardware reset -> CFE boots the kernel again.
+if [ -c /dev/watchdog ]; then
+    watchdog -T 60 -t 10 /dev/watchdog
+    echo "[init] Watchdog armed (60s timeout)"
+fi
+step "watchdog armed"
+
+# Persistent storage: UBIFS on mtd2 (ConfigFS, 6 MB) as UBI device 1, then overlay /etc and
+# /root so changes (ssh host key, shell history, on-box config edits) survive reboots and
+# reflashes. UBI handles the NAND's bad blocks and power cuts (JFFS2 logged "Empty flash" and data
+# CRC errors after each one), and UBIFS gives overlayfs tmpfile and RENAME_WHITEOUT. A mtd2 that
+# is not UBI yet (blank, or the vendor's ConfigFS: backup/mtd2_backup.bin) is formatted, once.
+step config
+mkdir -p /config
+if [ "$(head -c 4 /dev/mtd2)" != "UBI#" ]; then
+    echo "[init] /config: formatting mtd2 for UBI (once)..."
+    ubiformat /dev/mtd2 -y -q
+fi
+# -b 6: keep 6 PEBs for bad blocks. UBI's default reserves 20 per 1024 PEBs of the whole chip, for
+# each device: 20 of mtd2's 48, which left /config 916 KB.
+if [ "$(head -c 4 /dev/mtd2)" = "UBI#" ] && ubiattach -m 2 -d 1 -b 6 >/dev/null; then
+    [ -e /dev/ubi1_0 ] || ubimkvol /dev/ubi1 -N config -m >/dev/null
+    mount -t ubifs ubi1:config /config
+fi
+# Once, after that reserve shrank: UBIFS fixed its size when made, so the volume is remade at the
+# full size and the files put back (kept in RAM meanwhile)
+if grep -q ' /config ' /proc/mounts && [ "$(cat /sys/class/ubi/ubi1/avail_eraseblocks)" -gt 0 ]; then
+    echo "[init] /config: growing to the free space (once)..."
+    tar -C /config -cf /dev/shm/config.tar . && umount /config && ubirmvol /dev/ubi1 -N config \
+        && ubimkvol /dev/ubi1 -N config -m >/dev/null && mount -t ubifs ubi1:config /config \
+        && tar -C /config -xf /dev/shm/config.tar && sync && echo "[init] /config: grown"
+    rm -f /dev/shm/config.tar
+fi
+grep -q ' /config ' /proc/mounts || echo "[init] WARNING: /config unavailable, running volatile"
+
+# A rootfs update (make flash-rootfs) writes the new image to the volume "rootfs_new", swaps the
+# names atomically and reboots: the previous one, now "rootfs_old", goes once this one booted
+grep -l '^rootfs_old$' /sys/class/ubi/ubi0_*/name >/dev/null 2>&1 && ubirmvol /dev/ubi0 -N rootfs_old
+# A file of the overlays wins over the image's copy, for good: `make check-overlay` lists them
+if grep -q ' /config ' /proc/mounts; then
+    for d in etc root; do
+        mkdir -p "/config/overlay/$d" "/config/overlay/.$d-work"
+        mount -t overlay \
+            -o "lowerdir=/$d,upperdir=/config/overlay/$d,workdir=/config/overlay/.$d-work" \
+            overlay "/$d" \
+            || echo "[init] WARNING: overlay /$d failed"
+    done
+fi
+
+hostname AirTies
+ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
+
+# zram swap (64 MB, LZ4): a cushion for memory spikes, no flash wear
+if [ -e /sys/block/zram0 ]; then
+    echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null
+    echo 64M > /sys/block/zram0/disksize && mkswap /dev/zram0 >/dev/null && swapon -p 100 /dev/zram0 \
+        && echo "[init] zram swap: 64 MB"
+fi
+
+# eth0 is the recovery path (direct cable, 192.168.2.1). DHCP only with a cable in: without one,
+# udhcpc held the boot for its whole timeout. The PHY is polled (the MAC gives no link IRQ), so the
+# carrier shows a few seconds after the link comes up.
+step eth0
+ifconfig eth0 up 2>/dev/null
+n=0
+while [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" != 1 ] && [ "$n" -lt 8 ]; do
+    usleep 500000; n=$((n + 1))
+done
+if [ "$(cat /sys/class/net/eth0/carrier 2>/dev/null)" = 1 ]; then
+    udhcpc -i eth0 -s /etc/network/udhcpc.script -n -q >/dev/null 2>&1
+fi
+ip -4 addr show eth0 2>/dev/null | grep -q inet || ifconfig eth0 192.168.2.1 netmask 255.255.255.0 up 2>/dev/null
+
+step syslog
+syslogd -C256
+klogd
+
+# WiFi, kird and the backup target, after syslogd (they log through it). Backgrounded with fds
+# detached from the console: getty's vhangup() on ttyS0 would otherwise kill them once rcS ends
+# (wifi waits up to 10 s for USB enumeration, backup for the disk).
+step wifi
+/etc/init.d/wifi </dev/null >/dev/null 2>&1 &
+step kird
+/etc/init.d/kird </dev/null >/dev/null 2>&1
+if [ -x /etc/init.d/backup ]; then
+    step backup
+    # Hourly SMART report into every chroot, run by crond (inittab)
+    echo "7 * * * * /usr/sbin/disk-health" > /var/spool/cron/crontabs/root
+    /etc/init.d/backup </dev/null >/dev/null 2>&1 &
+fi
+
+# An RCU stall (a CPU stuck for 21 s) is a panic, and a panic reboots (CONFIG_PANIC_TIMEOUT):
+# on 2026-10-25 CPU0 stopped running its timers under the backups' load; the kernel saw the stall
+# and only reported it, while the watchdog daemon, on the live CPU1, kept petting: 5 h frozen.
+echo 1 > /proc/sys/kernel/panic_on_rcu_stall
+echo 1 > /proc/sys/kernel/max_rcu_stall_to_panic
+
+# sshd's host key, on the persistent /etc overlay: the same identity across reboots and reflashes
+step sshd
+[ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key
+
+touch /var/run/rcS.done
+step "done"
+# The box's state, at getty's login prompt and SSH logins (rewritten as it changes: the DHCP
+# lease, the clock, the disk)
+/usr/sbin/status-banner

@@ -1,0 +1,23 @@
+#!/bin/sh
+# wlan0 is the only way in: when the gateway stops answering, restart WiFi
+# (3 min), then reboot cleanly (8 min: the dongle or its driver is gone).
+# The hardware watchdog only catches a hung kernel, not a dead link.
+fails=0
+while :; do
+    sleep 60
+    gw=$(ip route | awk '/^default/ && /wlan0/ {print $3; exit}')
+    if [ -n "$gw" ] && ping -c 2 -W 3 "$gw" >/dev/null 2>&1; then
+        [ "$fails" -gt 0 ] && logger -t wifi-watch "gateway $gw back after $fails min"
+        fails=0; continue
+    fi
+    fails=$((fails + 1))
+    logger -t wifi-watch "gateway ${gw:-none} unreachable ($fails min)"
+    case "$fails" in
+        3) logger -t wifi-watch "restarting WiFi"
+           killall wpa_supplicant udhcpc 2>/dev/null; rm -f /var/run/udhcpc.wlan0.pid
+           ifconfig wlan0 down 2>/dev/null; sleep 2
+           /etc/init.d/wifi ;;
+        8) logger -t wifi-watch "WiFi still down: rebooting"
+           sync; reboot ;;
+    esac
+done

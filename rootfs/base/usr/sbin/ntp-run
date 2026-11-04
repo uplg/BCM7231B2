@@ -1,0 +1,6 @@
+#!/bin/sh
+# ntpd, kept up by init (inittab respawn). The board has no RTC: it boots in 1970, and TLS
+# certificates then look "not yet valid". ntp-event marks the clock set at the first sync.
+ntpd -n -S /usr/sbin/ntp-event -p 0.pool.ntp.org -p 1.pool.ntp.org -p 2.pool.ntp.org
+# ntpd exits when its peers do not resolve yet (no network): init starts it again after this
+sleep 10

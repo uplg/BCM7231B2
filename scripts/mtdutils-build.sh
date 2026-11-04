@@ -1,5 +1,4 @@
 #!/bin/bash
-# =============================================================================
 # In-container mtd-utils build (flash_erase + nandwrite, static, MIPS32 R1) —
 # invoked by `make mtdutils`. These also ship in the rootfs so the box can
 # reflash itself over SSH (make flash-rootfs / flash-kernel). The UBI tools
@@ -7,7 +6,6 @@
 # /config UBIFS. And ubinize for this host, to build that UBI image.
 # Output: /output/{flash_erase,nandwrite,ubiformat,ubiattach,ubimkvol},
 #         /output/host/ubinize
-# =============================================================================
 set -e
 
 MTDUTILS_VERSION="${MTDUTILS_VERSION:?MTDUTILS_VERSION not set}"
@@ -19,9 +17,7 @@ CC="${CROSS}-gcc"
 STRIP="${CROSS}-strip"
 CFLAGS_COMMON="-Os -D_GNU_SOURCE"
 
-echo "============================================"
-echo "  mtd-utils ${MTDUTILS_VERSION} — static MIPS32 R1"
-echo "============================================"
+echo "mtd-utils ${MTDUTILS_VERSION} — static MIPS32 R1"
 
 if [ ! -f "/dl/$TARBALL" ]; then
     echo "[*] Downloading $URL ..."

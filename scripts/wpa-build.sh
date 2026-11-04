@@ -1,10 +1,8 @@
 #!/bin/bash
-# =============================================================================
 # In-container wpa_supplicant build (static, MIPS32 R1) — invoked by
 # `make wpa`. Builds a static libnl first (nl80211 driver needs it), then
 # wpa_supplicant with the internal TLS/crypto (no OpenSSL): WPA2-PSK + SAE.
 # Output: /output/wpa_supplicant, /output/wpa_cli, /output/wpa_passphrase
-# =============================================================================
 set -e
 
 WPA_VERSION="${WPA_VERSION:?WPA_VERSION not set}"
@@ -20,9 +18,7 @@ CROSS="$(cat /opt/cross-prefix)"
 CC="${CROSS}-gcc"
 STRIP="${CROSS}-strip"
 
-echo "============================================"
-echo "  wpa_supplicant ${WPA_VERSION} + libnl ${LIBNL_VERSION} — static MIPS32 R1"
-echo "============================================"
+echo "wpa_supplicant ${WPA_VERSION} + libnl ${LIBNL_VERSION} — static MIPS32 R1"
 
 for pair in "$WPA_TARBALL $WPA_URL" "$LIBNL_TARBALL $LIBNL_URL"; do
     set -- $pair
@@ -39,7 +35,7 @@ rm -rf "$BUILDDIR"; mkdir -p "$STAGE"
 tar xzf "/dl/$LIBNL_TARBALL" -C "$BUILDDIR"
 tar xzf "/dl/$WPA_TARBALL" -C "$BUILDDIR"
 
-# --- libnl: static only, no CLI tools ---
+# libnl: static only, no CLI tools
 echo "[*] Building libnl (static)..."
 cd "$BUILDDIR/libnl-${LIBNL_VERSION}"
 ./configure \
@@ -51,7 +47,7 @@ cd "$BUILDDIR/libnl-${LIBNL_VERSION}"
 make -j"$(nproc)" 2>&1 | tail -3
 make install 2>&1 | tail -2
 
-# --- wpa_supplicant: nl80211 + internal TLS, no EAP/WPS/P2P bloat ---
+# wpa_supplicant: nl80211 + internal TLS, no EAP/WPS/P2P bloat
 echo "[*] Configuring wpa_supplicant..."
 cd "$BUILDDIR/wpa_supplicant-${WPA_VERSION}/wpa_supplicant"
 cat > .config << 'WPACONFIG'

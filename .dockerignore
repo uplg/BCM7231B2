@@ -2,7 +2,6 @@
 .git
 build_output
 new_rootfs
-new_rootfs.squashfs
 rootfs_extracted
 backup
 logs

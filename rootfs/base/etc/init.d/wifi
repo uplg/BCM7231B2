@@ -1,0 +1,33 @@
+#!/bin/sh
+# Bring up wlan0 (Netgear A6150 / rtw88_8822bu). Idempotent, safe to re-run.
+# Credentials: /etc/wpa_supplicant.conf (persistent via the /config overlay).
+[ -x /usr/sbin/wpa_supplicant ] || exit 0
+[ -f /etc/wpa_supplicant.conf ] || exit 0
+
+# USB enumeration + firmware load can land a few seconds after rcS runs
+n=0
+while [ ! -d /sys/class/net/wlan0 ] && [ "$n" -lt 20 ]; do usleep 500000; n=$((n+1)); done
+[ -d /sys/class/net/wlan0 ] || { logger -t wifi "no wlan0 (dongle absent?)"; exit 1; }
+
+ifconfig wlan0 up 2>/dev/null || true
+# The WiFi's receive path split across the two CPUs: the USB interrupt and its half (EHCI, USB
+# completion, rtw88, mac80211) on CPU1, the IP/TCP half (RPS) on CPU0. CPU0 keeps the SATA
+# interrupt and the timers: it starved under the backups' load on 2026-10-25, with all of the
+# WiFi on it. Measured 2026-11-04 at 20 MB/s of raw TCP: CPU0 27 % busy (was 57 %), CPU1 64 %,
+# same throughput. Set again each time wlan0 is (RPS is per interface).
+for irq in $(awk -F: '/ehci_hcd/ {print $1 + 0}' /proc/interrupts); do
+    echo 2 > "/proc/irq/$irq/smp_affinity" 2>/dev/null
+done
+echo 1 > /sys/class/net/wlan0/queues/rx-0/rps_cpus 2>/dev/null
+if ! pidof wpa_supplicant >/dev/null 2>&1; then
+    /usr/sbin/wpa_supplicant -B -s -i wlan0 -c /etc/wpa_supplicant.conf
+fi
+PIDFILE=/var/run/udhcpc.wlan0.pid
+if [ ! -f "$PIDFILE" ] || ! kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+    udhcpc -i wlan0 -s /etc/network/udhcpc.script -b -p "$PIDFILE" >/dev/null 2>&1
+fi
+# Keep it up (one watcher, started here)
+W=/var/run/wifi-watch.pid
+if [ ! -f "$W" ] || ! kill -0 "$(cat "$W" 2>/dev/null)" 2>/dev/null; then
+    start-stop-daemon -S -b -m -p "$W" -x /usr/sbin/wifi-watch
+fi

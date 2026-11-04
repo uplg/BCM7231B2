@@ -1,0 +1,18 @@
+#!/bin/sh
+# SMART report (smartctl -j) of the backup disk, dropped as disk-health in
+# every backup chroot: the servers read /disk-health over SFTP.
+D=/srv/backup
+mountpoint -q "$D" || exit 0
+# the device under the mount: findfs would probe every block device (each NAND partition, the
+# USB sticks) once an hour to find a label it already knows
+DEV=$(awk -v d="$D" '$2 == d {print $1}' /proc/mounts)
+[ -n "$DEV" ] || exit 1
+tmp=$(mktemp) || exit 1
+# Non-zero exit bits flag warnings: the JSON says what they are
+smartctl -j -i -H -A "$DEV" > "$tmp"
+[ -s "$tmp" ] || { rm -f "$tmp"; exit 1; }
+for h in $(cat /etc/ssh/backup_hosts); do
+    c="$D/vykar-$h"
+    cp "$tmp" "$c/.disk-health.tmp" && chmod 644 "$c/.disk-health.tmp" && mv -f "$c/.disk-health.tmp" "$c/disk-health"
+done
+rm -f "$tmp"

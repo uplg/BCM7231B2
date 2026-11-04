@@ -1,0 +1,61 @@
+#!/bin/sh
+# Backup target: mounts the backup disk (ext4, label "backup") on
+# /srv/backup, then writes the first SMART report. sshd (inittab) serves the
+# chroots; the servers reach it through a subnet route on a tailnet node of
+# the LAN (the box runs none: its CPU spent 1.5 cores on wireguard-go).
+# Idempotent. Runs in the background from rcS (waits for disk and clock).
+D=/srv/backup   # mount point baked into the read-only rootfs
+if ! mountpoint -q "$D"; then
+    # The disk can miss the boot: on 2026-10-25, after a warm reboot, it did not answer IDENTIFY
+    # (3 timeouts) and stayed unseen until a power cycle. Every 30 s for 10 minutes, the SATA
+    # host is rescanned: libata resets the link and asks the disk again.
+    n=0
+    while ! DEV=$(findfs LABEL=backup 2>/dev/null) && [ "$n" -lt 600 ]; do
+        sleep 1; n=$((n + 1))
+        if [ $((n % 30)) -eq 0 ]; then
+            logger -t backup "no disk labelled 'backup' after $n s: rescanning SATA"
+            for h in /sys/class/scsi_host/host*/scan; do echo "- - -" > "$h"; done
+        fi
+    done
+    [ -n "$DEV" ] || { logger -t backup "no disk labelled 'backup' after 10 min"; exit 1; }
+    [ "$n" -ge 30 ] && logger -t backup "disk found after $n s"
+    # -p repairs what is safe to repair; 4 and up means a person must look
+    e2fsck -p "$DEV" > /tmp/fsck.log 2>&1; rc=$?
+    logger -t backup < /tmp/fsck.log
+    [ "$rc" -ge 4 ] && { logger -t backup "e2fsck $DEV exit $rc: not mounting"; exit 1; }
+    mount -t ext4 -o noatime "$DEV" "$D" || { logger -t backup "mount $DEV failed"; exit 1; }
+fi
+
+/usr/sbin/status-banner   # the disk is up
+
+# Dirty data reaches the disk within ~2 s (default: up to 30 s): after a
+# freeze and a power cut, the log file kept its size but its last 174 lines
+# were zeros (2026-10-12).
+sysctl -w vm.dirty_writeback_centisecs=100 vm.dirty_expire_centisecs=200 >/dev/null
+
+# Logs onto the disk from here on: a hang no longer takes them along (the
+# RAM buffer so far is kept, then syslogd writes the file; read it with
+# tail, logread has no buffer any more).
+L="$D/system/log"
+mkdir -p "$L"; chmod 700 "$D/system" "$L"
+if ! pgrep -f "syslogd -O $L" >/dev/null 2>&1; then
+    { echo "--- boot $(date -u '+%F %T') (RAM buffer before the disk) ---"; logread; } >> "$L/messages" 2>/dev/null
+    killall syslogd 2>/dev/null; sleep 1
+    syslogd -O "$L/messages" -s 2048 -b 5
+fi
+
+# Chroots: every component root-owned and not group/world-writable
+chown root:root "$D"; chmod 755 "$D"
+for h in $(cat /etc/ssh/backup_hosts); do
+    mkdir -p "$D/vykar-$h/repo"
+    chown root:root "$D/vykar-$h"; chmod 755 "$D/vykar-$h"
+    chown "vykar-$h:vykar" "$D/vykar-$h/repo"; chmod 700 "$D/vykar-$h/repo"
+done
+
+# Clock first: the SMART report carries its time, the servers judge its age
+# (/usr/sbin/ntp-event marks it set at ntpd's first sync)
+n=0
+while [ ! -e /var/run/clock-set ] && [ "$n" -lt 300 ]; do sleep 1; n=$((n + 1)); done
+
+# First SMART report now; crond (inittab, crontab written by rcS) runs it hourly after
+/usr/sbin/disk-health

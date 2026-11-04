@@ -1,5 +1,4 @@
 #!/bin/bash
-# =============================================================================
 # In-container kird build (static Rust, MIPS32 R1) — invoked by `make kird`.
 #
 # mipsel-unknown-linux-musl is Tier 3 (no prebuilt std -> nightly + build-std)
@@ -8,15 +7,12 @@
 # mips32 (R1, keeping the fpxx hard-float ABI — matches the Bootlin userland),
 # and link through the Bootlin musl gcc instead of rustc's self-contained crt.
 # Output: /output/kird
-# =============================================================================
 set -e
 
 CROSS="$(cat /opt/cross-prefix)"
 SPEC=/tmp/mipsel-airties-linux-musl.json
 
-echo "============================================"
-echo "  kird — static Rust, MIPS32 R1 (${CROSS})"
-echo "============================================"
+echo "kird — static Rust, MIPS32 R1 (${CROSS})"
 
 # Use the nightly PINNED in the builder image — a bare `+nightly` would pull
 # the floating channel at every run.

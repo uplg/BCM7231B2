@@ -48,7 +48,7 @@ DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
 
 #define DRVNAME "bcm7231-dvb"
 
-/* ------------------------- board configuration -------------------------- */
+/* board configuration */
 
 #define AIR_NUM_ADAPTERS   2
 #define AIR_I2C_BUS        1            /* BSC_B */
@@ -70,7 +70,7 @@ static const struct {
 	{ 0x63, 0x00c00000 },           /* slave,  IB1/parser1/buf1        */
 };
 
-/* ----------------------------- XPT registers ----------------------------- */
+/* XPT registers */
 
 #define XPT_MAP_BASE            0x10a04000u
 #define XPT_MAP_LEN             0x00031000u
@@ -148,7 +148,7 @@ static void xpt_wr(u32 phys, u32 v)
 	writel(v, xpt_base + (phys - XPT_MAP_BASE));
 }
 
-/* ------------------------------ MxL101SF -------------------------------- */
+/* MxL101SF */
 
 struct mxl_reg { u8 reg, mask, val; };
 
@@ -199,7 +199,7 @@ static const struct mxl_reg mxl_spur_8mhz[] = {
 	{0x00, 0xff, 0x00}, {0, 0, 0}
 };
 
-/* --------------------------- adapter context ----------------------------- */
+/* adapter context */
 
 struct air_adapter {
 	int idx;                        /* 0 = master, 1 = slave           */
@@ -254,7 +254,7 @@ struct air_adapter {
 
 static struct air_adapter *air_adapters[AIR_NUM_ADAPTERS];
 
-/* --------------------------- MxL i2c helpers ----------------------------- */
+/* MxL i2c helpers */
 
 /* Force register page 0.  The chip's page register (0x00) is GLOBAL state:
  * anything that dies between a page-2 switch and its restore (a killed
@@ -374,7 +374,7 @@ static int mxl_chip_init(struct air_adapter *a)
 	return ret;
 }
 
-/* ---------------------------- frontend ops ------------------------------- */
+/* frontend ops */
 
 static int mxl_fe_init(struct dvb_frontend *fe)
 {
@@ -492,7 +492,7 @@ static const struct dvb_frontend_ops mxl_fe_ops = {
 	.get_tune_settings    = mxl_fe_get_tune_settings,
 };
 
-/* ------------------------- XPT global bring-up --------------------------- */
+/* XPT global bring-up */
 
 /* Vendor BXPT_P_RsBuf_Init pointer discipline: BASE=off, END=off+size-1,
  * WRITE/VALID/READ = off-1 (empty), WM=0. */
@@ -616,7 +616,7 @@ static void xpt_adapter_init(struct air_adapter *a)
 	xpt_wr(XPT_FE_IB_CTRL(a->idx), v);
 }
 
-/* --------------------------- hw PID channels ----------------------------- */
+/* hw PID channels */
 
 static void air_ring_reprogram(struct air_adapter *a);
 
@@ -728,7 +728,7 @@ static int air_stop_feed(struct dvb_demux_feed *feed)
 	return 0;
 }
 
-/* ------------------------------ ring drain ------------------------------- */
+/* ring drain */
 
 /* Full ring reprogram, mirroring the validated `setup` sequence.  Used at
  * thread start and as the recovery path when the engine wedges paused-full.
@@ -892,7 +892,7 @@ static int air_drain_thread(void *data)
 	return 0;
 }
 
-/* ------------------------------ registration ----------------------------- */
+/* registration */
 
 static void air_adapter_destroy(struct air_adapter *a);
 

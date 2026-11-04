@@ -1,10 +1,8 @@
 #!/bin/bash
-# =============================================================================
 # In-container e2fsprogs build (static, musl, MIPS32 R1) — invoked by
 # `make e2fsprogs`. The box formats and checks its backup disk (ext4) with
 # these; BusyBox only knows ext2.
 # Output: /output/mke2fs, /output/e2fsck, /output/tune2fs
-# =============================================================================
 set -e
 
 E2FSPROGS_VERSION="${E2FSPROGS_VERSION:?E2FSPROGS_VERSION not set}"
@@ -13,9 +11,7 @@ URL="https://mirrors.edge.kernel.org/pub/linux/kernel/people/tytso/e2fsprogs/v${
 
 CROSS="$(cat /opt/cross-prefix)"
 
-echo "============================================"
-echo "  e2fsprogs ${E2FSPROGS_VERSION} — static MIPS32 R1"
-echo "============================================"
+echo "e2fsprogs ${E2FSPROGS_VERSION} — static MIPS32 R1"
 
 if [ ! -f "/dl/$TARBALL" ]; then
     echo "[*] Downloading $URL ..."

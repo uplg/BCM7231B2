@@ -90,7 +90,7 @@ static int http_error(int c, int code, const char *msg)
     return -1;
 }
 
-/* ------------------------------- /status -------------------------------- */
+/* /status */
 
 static void do_status(int c)
 {
@@ -132,7 +132,7 @@ static void do_status(int c)
     send(c, out, (size_t)n, MSG_NOSIGNAL);
 }
 
-/* ------------------------------ /channels ------------------------------- */
+/* /channels */
 
 static void do_channels(int c)
 {
@@ -154,7 +154,7 @@ static void do_channels(int c)
     send(c, body, (size_t)n, MSG_NOSIGNAL);
 }
 
-/* ------------------------------ query utils ----------------------------- */
+/* query utils */
 
 static int q_u32(const char *q, const char *key, uint32_t *out)
 {
@@ -188,7 +188,7 @@ static int q_pids(const char *q, uint16_t *pids)
     return n;
 }
 
-/* ---------------------------- adapter control --------------------------- */
+/* adapter control */
 
 static void adapter_close_filters(struct adapter *ad)
 {
@@ -301,7 +301,7 @@ static void adapter_evict_all(struct adapter *ad)
         client_drop(ad, 0);
 }
 
-/* -------------------------------- /tune --------------------------------- */
+/* /tune */
 
 static void do_tune(int c, const char *query)
 {
@@ -374,7 +374,7 @@ static void do_tune(int c, const char *query)
             pick, freq, ad->nclients, ad->nfilters);
 }
 
-/* --------------------------------- main ---------------------------------- */
+/* main */
 
 static void pump_adapter(struct adapter *ad)
 {

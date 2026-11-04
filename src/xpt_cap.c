@@ -61,7 +61,7 @@
 #define PAGE      0x1000u
 #define PAGEMASK  (~(PAGE - 1))
 
-/* ---- XPT register map (physical addresses, BCHP offset + 0x10000000) ---- */
+/* XPT register map (physical addresses, BCHP offset + 0x10000000) */
 #define XPT_MAP_BASE            0x10a04000u  /* XPT_FE start */
 #define XPT_MAP_LEN             0x00031000u  /* ..0x10a35000 (incl. RAVE + code RAM) */
 
@@ -88,8 +88,8 @@
 #define XPT_MSG_PID2BUF_W(c, w) (0x10a1c000u + 0x10u * (c) + 4u * (w))
 #define XPT_MSG_PID2BUF_BIT(b)  (1u << ((b) & 31u))
 
-/* ---- RSBUFF / XCBUFF / pacing (reversed from nexus.ko BXPT_P_*Buf_Init,
- *      cross-checked vs BCM7340 RDB; see docs/xpt_capture_notes.md) --------
+/* RSBUFF / XCBUFF / pacing (reversed from nexus.ko BXPT_P_*Buf_Init,
+ *      cross-checked vs BCM7340 RDB; see docs/xpt_capture_notes.md)
  *
  * The parser output does NOT reach the MSG record engine directly: every
  * packet is staged through per-band DRAM buffers that the vendor programs
@@ -155,7 +155,7 @@ static const struct xc_client xc_clients[] = {
 #define XPT_SAM_TBL1            0x10a1a800u
 #define XPT_SAM_TBL2            0x10a1b000u
 
-/* ---- XPT_RAVE (record engine, reversed from BXPT_Rave_* in nexus.ko) ----
+/* XPT_RAVE (record engine, reversed from BXPT_Rave_* in nexus.ko)
  *
  * HISTORICAL NOTE, 2026-07-22: the RAVE path is NOT needed for whole-TS
  * capture.  The "no write engine ever moves" wall was the PID2BUF mapping
@@ -333,7 +333,7 @@ static void map_xpt(void)
     xpt = m;
 }
 
-/* ------------------------- raw peek/poke helpers ------------------------- */
+/* raw peek/poke helpers */
 
 static volatile uint32_t *map_word(uint32_t phys, void **page)
 {
@@ -344,7 +344,7 @@ static volatile uint32_t *map_word(uint32_t phys, void **page)
     return (volatile uint32_t *)((char *)m + (phys & (PAGE - 1)));
 }
 
-/* --------------------------------- config -------------------------------- */
+/* config */
 
 struct cfg {
     uint32_t ib, parser, chan, buf;
@@ -533,7 +533,7 @@ static void parse_opts(int argc, char **argv, struct cfg *c)
     }
 }
 
-/* --------------------------------- status -------------------------------- */
+/* status */
 
 static void do_status(const struct cfg *c)
 {
@@ -624,7 +624,7 @@ static void do_status(const struct cfg *c)
            rreg(XPT_MSG_PID2BUF_W(c->chan, 3)));
 }
 
-/* ----------------------- RS / XC staging buffers ------------------------- */
+/* RS / XC staging buffers */
 
 /* Program one band's ring pointers exactly like the vendor helper
  * (BXPT_P_RsBuf_Init -> 0x33a7a8): BASE=off, END=off+size-1, and the
@@ -735,7 +735,7 @@ static void do_init_buffers(const struct cfg *c)
     }
 }
 
-/* -------------------------------- openinit ------------------------------- */
+/* openinit */
 
 /* Bump allocator over the spare reserved RAM after the MSG ring. */
 static uint32_t ring_cursor, ring_limit;
@@ -875,7 +875,7 @@ static void do_openinit(const struct cfg *c)
             "setup --no-rsbuf --no-xc\n", ring_cursor - (c->phys + c->size));
 }
 
-/* -------------------------------- raveinit ------------------------------- */
+/* raveinit */
 
 /* Global RAVE bring-up (vendor BXPT_Rave_OpenChannel first-open path):
  * clear the three SRAM table regions, load the 16 KB microcode into the
@@ -932,14 +932,14 @@ static void do_raveinit(const struct cfg *c, const char *ucode_path)
             "live (probe with memprobe)\n", RAVE_CTX_BASE(0));
 }
 
-/* ---------------------------------- rave --------------------------------- */
+/* rave */
 
 /* Defined in the capture section below; the drain loop reuses them. */
 static volatile sig_atomic_t g_stop;
 static void on_sig(int sig);
 static int xwrite(const uint8_t *p, size_t n);
 
-/* ------------------------------ UDP output -------------------------------
+/* UDP output
  * --udp host:port makes rave_drain emit 1316-byte datagrams (7 x 188-byte
  * TS packets, the MPEG-over-UDP framing VLC expects on udp://@:port)
  * instead of writing stdout.  Partial tail is buffered across drains. */
@@ -1276,7 +1276,7 @@ static void do_rave_drain(const struct cfg *c)
             (unsigned long long)total);
 }
 
-/* --------------------------------- setup --------------------------------- */
+/* setup */
 
 static void do_setup(const struct cfg *c)
 {
@@ -1364,7 +1364,7 @@ static void do_setup(const struct cfg *c)
             c->ib, c->buf);
 }
 
-/* --------------------------------- addpid -------------------------------- */
+/* addpid */
 
 /* Route ONE extra PID-matching channel into an already-set-up MSG buffer:
  * PID2BUF mask, SPID record destination, PID_TABLE entry + enable — exactly
@@ -1398,7 +1398,7 @@ static void do_addpid(const struct cfg *c)
     wrv("PID_TABLE en", XPT_PID_TABLE(c->chan), v | PID_ENABLE);
 }
 
-/* --------------------------------- addbuf -------------------------------- */
+/* addbuf */
 
 /* Program ONE extra MSG ring buffer (steps 1..3 of setup, nothing else):
  * lets several services run on separate buffers — the MSG engine's
@@ -1419,7 +1419,7 @@ static void do_addbuf(const struct cfg *c)
     wrv("BUF_CTRL1", XPT_MSG_BUF_CTRL1(c->buf), c->bufmode);
 }
 
-/* --------------------------------- stop ---------------------------------- */
+/* stop */
 
 static void do_stop(const struct cfg *c)
 {
@@ -1443,7 +1443,7 @@ static void do_stop(const struct cfg *c)
     wrv("RS_EN_G3", RS_EN_G3, rreg(RS_EN_G3) & ~(1u << c->parser));
 }
 
-/* -------------------------------- capture -------------------------------- */
+/* capture */
 
 static volatile sig_atomic_t g_stop;
 
@@ -1558,7 +1558,7 @@ static void do_capture(const struct cfg *c)
             (unsigned long long)total);
 }
 
-/* ------------------------------- peek/poke ------------------------------- */
+/* peek/poke */
 
 static void do_peek(int argc, char **argv)
 {
@@ -1592,7 +1592,7 @@ static void do_poke(int argc, char **argv)
     munmap(page, PAGE);
 }
 
-/* ---------------------------------- load --------------------------------- */
+/* load */
 
 /* load <addr>: copy stdin into physical RAM through mmap (write() on
  * /dev/mem fails with EFAULT for the /memreserve/ region — no linear
@@ -1617,7 +1617,7 @@ static void do_load(int argc, char **argv)
     fprintf(stderr, "loaded %zu bytes at 0x%08x\n", total, addr);
 }
 
-/* ---------------------------------- main --------------------------------- */
+/* main */
 
 int main(int argc, char **argv)
 {
