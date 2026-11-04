@@ -1,9 +1,9 @@
 #!/bin/bash
-# In-container OpenSSH build (static, musl, MIPS32 R1, no OpenSSL) — invoked
-# by `make openssh`. Serves the chrooted SFTP-only backup accounts (Dropbear,
-# the admin SSH, has no ChrootDirectory / internal-sftp).
+# In-container OpenSSH build (static, musl, MIPS32 R1, no OpenSSL), invoked
+# by `make openssh`. The box's only SSH server: root on port 22, the chrooted
+# SFTP-only backup accounts on port 2222 (ChrootDirectory, internal-sftp).
 # Without OpenSSL: Ed25519 keys, chacha20-poly1305 / aes-ctr, curve25519 and
-# the post-quantum mlkem/sntrup key exchanges — all built in.
+# the post-quantum mlkem/sntrup key exchanges, all built in.
 # Output: /output/sshd, /output/sshd-session, /output/sshd-auth, /output/ssh-keygen
 set -e
 # shellcheck source=lib.sh
@@ -19,7 +19,7 @@ ZURL="https://zlib.net/${ZTARBALL}"
 CROSS="$(cat /opt/cross-prefix)"
 PREFIX=/tmp/ossh/sysroot
 
-echo "OpenSSH ${OPENSSH_VERSION} — static MIPS32 R1"
+echo "OpenSSH ${OPENSSH_VERSION}: static, MIPS32 R1"
 
 fetch "$TARBALL" "$URL"
 fetch "$ZTARBALL" "$ZURL"

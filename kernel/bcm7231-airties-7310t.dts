@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 /dts-v1/;
 
-/* Top 1 MB of RAM bank0, reserved for the XPT MSG DMA ring and the PB0
- * playback source buffers (programmed from userspace by src/xpt_cap.c). */
-/memreserve/ 0x0ff00000 0x00100000;
-
-/* 2 MB at 12 MB, reserved for the XPT_RAVE CDB record ring.  The RAVE CDB
- * pointer is a 24-bit MEMC device offset with no high-address window, so the
- * ring MUST sit in the low 16 MB of DRAM (kernel lives in 0..~6 MB; this is
- * clear of it).  See do_rave() in src/xpt_cap.c. */
+/* 2 MB at 12 MB for the DVB driver (bcm7231-dvb.c), 1 MB per adapter
+ * (adapter1 at 0x00c00000, adapter0 at 0x00d00000): its XPT MSG DMA ring
+ * (512 KB), then its RS G1, RS G3 and XC staging rings (128 KB each). The
+ * unused bands share a 256-byte dummy right after adapter0's (0x00de0000).
+ * In the low 16 MB of DRAM, where the rings were validated, clear of the
+ * kernel (0..~6 MB). */
 /memreserve/ 0x00c00000 0x00200000;
 
 #include "bcm7231.dtsi"

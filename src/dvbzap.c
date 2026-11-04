@@ -1,10 +1,10 @@
 /*
- * dvbzap.c — minimal Linux-DVB API client for the AIR 7310T bring-up:
+ * dvbzap.c: minimal Linux-DVB API client for the AIR 7310T, to test the driver:
  * tune a DVB-T mux on /dev/dvb/adapterN/frontend0, open one hardware PID
  * filter per requested PID on demux0 (DMX_OUT_TS_TAP), then pump dvr0 to
  * stdout or to 1316-byte UDP/TS datagrams (VLC udp://@:port).
  *
- * This is the standard-API mirror of the xpt_cap/mxl_probe raw chain —
+ * It uses the standard API only:
  * if this works, any DVB software (dvblast, tvheadend, w_scan) will.
  *
  *   dvbzap -a 0 -f 618000000 -p 0x00,0x11,0x6e,0x78,0x82 --udp 192.168.2.2:1234
@@ -129,7 +129,7 @@ int main(int argc, char **argv)
 
     /* -S: read-only SNR/status watch alongside a running stream
      * (read_snr touches only page-0 regs in the driver, so polling here
-     * does not disturb the RW owner; do NOT poll signal strength — it
+     * does not disturb the RW owner; do NOT poll signal strength: it
      * page-switches and can corrupt a concurrent tune) */
     if (snrwatch) {
         snprintf(path, sizeof path, "/dev/dvb/adapter%d/frontend0", adapter);
@@ -178,8 +178,8 @@ int main(int argc, char **argv)
     if (!(st & FE_HAS_LOCK))
         return 2;
 
-    /* demux: one TS_TAP filter per PID */
-    int dmx[MAX_PIDS + 1], ndmx = 0;
+    /* demux: one TS_TAP filter per PID. A filter lives as long as its descriptor: they all stay
+     * open until the process exits. */
     snprintf(path, sizeof path, "/dev/dvb/adapter%d/demux0", adapter);
     if (allpass) { pids[0] = 0x2000; npids = 1; }
     for (int i = 0; i < npids; i++) {
@@ -196,7 +196,6 @@ int main(int argc, char **argv)
             perror("DMX_SET_PES_FILTER");
             return 1;
         }
-        dmx[ndmx++] = d;
         fprintf(stderr, "  filter pid 0x%04x\n", pids[i]);
     }
 
@@ -207,7 +206,7 @@ int main(int argc, char **argv)
     if (udp)
         udp_open(udp);
     /* sigaction WITHOUT SA_RESTART: musl's signal() sets SA_RESTART and
-     * the blocking dvr read then never returns EINTR — TERM would never
+     * the blocking dvr read then never returns EINTR; TERM would never
      * break the loop and the zombie keeps the frontend busy. */
     {
         struct sigaction sa = { .sa_handler = on_sig };

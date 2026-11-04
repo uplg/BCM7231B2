@@ -1,10 +1,10 @@
 #!/bin/bash
-# In-container kird build (static Rust, MIPS32 R1) — invoked by `make kird`.
+# In-container kird build (static Rust, MIPS32 R1), invoked by `make kird`.
 #
 # mipsel-unknown-linux-musl is Tier 3 (no prebuilt std -> nightly + build-std)
 # AND its stock spec emits MIPS32 R2 code, which the BMIPS4380 rejects with
 # "Illegal instruction". So: dump the stock target spec, downgrade cpu to
-# mips32 (R1, keeping the fpxx hard-float ABI — matches the Bootlin userland),
+# mips32 (R1, keeping the fpxx hard-float ABI, which matches the Bootlin userland),
 # and link through the Bootlin musl gcc instead of rustc's self-contained crt.
 # Output: /output/kird
 set -e
@@ -12,9 +12,9 @@ set -e
 CROSS="$(cat /opt/cross-prefix)"
 SPEC=/tmp/mipsel-airties-linux-musl.json
 
-echo "kird — static Rust, MIPS32 R1 (${CROSS})"
+echo "kird: static Rust, MIPS32 R1 (${CROSS})"
 
-# Use the nightly PINNED in the builder image — a bare `+nightly` would pull
+# Use the nightly PINNED in the builder image: a bare `+nightly` would pull
 # the floating channel at every run.
 TOOLCHAIN="$(rustup toolchain list | awk '{print $1}' | grep '^nightly' | head -1)"
 echo "[*] toolchain: $TOOLCHAIN"
@@ -56,7 +56,7 @@ BIN=/tmp/kird-target/mipsel-airties-linux-musl/release/kird
 [ -f "$BIN" ] || { echo "!!! BUILD FAILED !!!"; exit 1; }
 
 file "$BIN" | grep -q 'statically linked' || \
-    { echo "!!! kird is not static — the rootfs has no shared libs !!!"; file "$BIN"; exit 1; }
+    { echo "!!! kird is not static: the rootfs has no shared libs !!!"; file "$BIN"; exit 1; }
 
 cp "$BIN" /output/kird
 "${CROSS}-strip" /output/kird

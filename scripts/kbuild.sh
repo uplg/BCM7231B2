@@ -62,7 +62,7 @@ cp /work/kernel/bcm7231-dvb.c drivers/misc/
 
 # Firmware baked in via CONFIG_EXTRA_FIRMWARE (repo fw/, mounted at /work/fw)
 for f in rtw88/rtw8822b_fw.bin regulatory.db regulatory.db.p7s; do
-    [ -f "/work/fw/$f" ] || { echo "!! /work/fw/$f missing — CONFIG_EXTRA_FIRMWARE build will fail"; exit 1; }
+    [ -f "/work/fw/$f" ] || { echo "!! /work/fw/$f missing: CONFIG_EXTRA_FIRMWARE build will fail"; exit 1; }
 done
 
 # Configure: bmips_stb_defconfig + our minimal fragment
@@ -81,7 +81,7 @@ make olddefconfig
 
 # Build
 # vmlinuz = self-decompressing ELF (builds vmlinux as a prerequisite); it is
-# what gets flashed to mtd4 — CFE boots it exactly like a raw kernel ELF.
+# what gets flashed to mtd4; CFE boots it exactly like a raw kernel ELF.
 echo "[*] Building vmlinuz (-j$(nproc))..."
 set +e
 make -j"$(nproc)" vmlinuz 2>&1 | tee /tmp/kernel_build.log | tail -30
@@ -111,8 +111,8 @@ strings /output/vmlinux | grep 'Linux version' | head -1
 KSIZE=$(stat -c %s /output/vmlinux)
 ZSIZE=$(stat -c %s /output/vmlinuz)
 echo "vmlinux (raw): ${KSIZE} bytes ($((KSIZE / 1024)) KB)"
-echo "vmlinuz (flashed): ${ZSIZE} bytes ($((ZSIZE / 1024)) KB) — mtd4 limit is 7340032 (7 MB)"
+echo "vmlinuz (flashed): ${ZSIZE} bytes ($((ZSIZE / 1024)) KB), mtd4 limit is 7340032 (7 MB)"
 if [ "$ZSIZE" -gt 7340032 ]; then
-    echo "!!! WARNING: vmlinuz exceeds the 7 MB kernel partition — do NOT flash this !!!"
+    echo "!!! WARNING: vmlinuz exceeds the 7 MB kernel partition: do NOT flash this !!!"
     exit 2
 fi

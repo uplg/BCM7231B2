@@ -23,7 +23,7 @@ connect)
     mkdir -p logs
     LOGFILE="logs/uart_$(date +%Y%m%d_%H%M%S).log"
     echo "Connecting to $SERIAL_PORT @ $BAUD_RATE (log: $LOGFILE)"
-    echo "Ctrl+C during boot for CFE prompt — Ctrl+A Ctrl+X to quit."
+    echo "Ctrl+C during boot for CFE prompt, Ctrl+A Ctrl+X to quit."
     picocom -b "$BAUD_RATE" --logfile "$LOGFILE" "$SERIAL_PORT"
     ;;
 *)

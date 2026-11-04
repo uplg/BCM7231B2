@@ -1,5 +1,5 @@
 #!/bin/bash
-# In-container BusyBox build (static, musl, MIPS32 R1) — invoked by `make busybox`.
+# In-container BusyBox build (static, musl, MIPS32 R1), invoked by `make busybox`.
 # Toolchain is baked into the airties-builder image; tarballs cached in /dl.
 # Output: /output/busybox
 set -e
@@ -14,7 +14,7 @@ CROSS="$(cat /opt/cross-prefix)"
 export ARCH=mips
 export CROSS_COMPILE="${CROSS}-"
 
-echo "BusyBox ${BUSYBOX_VERSION} — static musl MIPS32 R1"
+echo "BusyBox ${BUSYBOX_VERSION}: static musl, MIPS32 R1"
 
 fetch "$TARBALL" "$URL"
 

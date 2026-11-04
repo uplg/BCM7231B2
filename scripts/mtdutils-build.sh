@@ -1,5 +1,5 @@
 #!/bin/bash
-# In-container mtd-utils build (flash_erase + nandwrite, static, MIPS32 R1) —
+# In-container mtd-utils build (flash_erase + nandwrite, static, MIPS32 R1),
 # invoked by `make mtdutils`. These also ship in the rootfs so the box can
 # reflash itself over SSH (make flash-rootfs / flash-kernel). The UBI tools
 # too: ubiformat writes the rootfs UBI image, ubiattach/ubimkvol bring up the
@@ -18,7 +18,7 @@ CC="${CROSS}-gcc"
 STRIP="${CROSS}-strip"
 CFLAGS=(-Os -D_GNU_SOURCE -I./include "-DVERSION=\"${MTDUTILS_VERSION}\"")
 
-echo "mtd-utils ${MTDUTILS_VERSION} — static MIPS32 R1"
+echo "mtd-utils ${MTDUTILS_VERSION}: static, MIPS32 R1"
 
 fetch "$TARBALL" "$URL"
 

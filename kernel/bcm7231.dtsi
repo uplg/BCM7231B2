@@ -105,20 +105,20 @@
 		/*
 		 * UPG IRQ0 block.  On BCM7231 this lives at 0x406780
 		 * (7425-style UPG layout), NOT 0x406600 (7362 layout) as a
-		 * previous revision assumed — verified in the vendor 3.3.8
+		 * previous revision assumed; verified in the vendor 3.3.8
 		 * kernel binary (arch_init_irq writes IRQ0_IRQEN=0x70000 at
 		 * 0x10406780, and touches no other UPG IRQ register) and
-		 * live on hardware 2026-07-20 with uart_irq_probe.
+		 * live on hardware (2026-07-20).
 		 *
 		 * int-fwd-mask 0x70000 = bits 16/17/18 = uarta/b/c_irqen:
 		 * these gate each UART's INTR toward its dedicated L1 line
 		 * (64/65/66).  The driver sets them in IRQ0_IRQEN at probe
-		 * and leaves them — this is the "gate" whose absence froze
+		 * and leaves them: this is the "gate" whose absence froze
 		 * every previous IRQ-mode attempt (the mask was being
 		 * written to the wrong address, 0x406600).
 		 *
 		 * int-map-mask / parent lines carried from the 7362/7425
-		 * family; inert here (no L2 bit is ever enabled — IRQEN
+		 * family; inert here (no L2 bit is ever enabled: IRQEN
 		 * only ever holds the fwd mask, so the cascades never fire
 		 * and no driver consumes upg_irq0_intc interrupts).
 		 */
@@ -139,10 +139,10 @@
 
 		/*
 		 * BSC I2C masters.  Bases mapped live on hardware (2026-07-20,
-		 * memprobe): three 0x58-byte register blocks at 0x406200/
+		 * probed word by word): three 0x58-byte register blocks at 0x406200/
 		 * 0x406280/0x406300 (0x80 spacing), exact brcmstb bsc_regs
 		 * layout; the rest of each 0x80 window bus-errors.  No
-		 * interrupts on purpose — the upg_bsc L1 line is unverified,
+		 * interrupts on purpose: the upg_bsc L1 line is unverified,
 		 * and i2c-brcmstb polls when no IRQ is given.
 		 * The DVB frontends (2x MaxLinear MxL101SF, per the stock
 		 * wydvb stack) hang off one of these buses.
@@ -198,9 +198,9 @@
 		 * Vendor 3.3.8 registers them as IRQ 65/66/67 (brcm_16550_ports)
 		 * and brcm_intc_enable maps vendor IRQ N to L1 bit N-1 in the
 		 * W2 mask registers => L1 hwirq 64/65/66.  The lines only
-		 * reach the L1 once IRQ0_IRQEN bits 16/17/18 are set — see
+		 * reach the L1 once IRQ0_IRQEN bits 16/17/18 are set; see
 		 * upg_irq0_intc above (int-fwd-mask).  Chain validated live
-		 * from userspace on 2026-07-20 (uart_irq_probe -gate: THRE
+		 * from userspace on 2026-07-20 (a THRE
 		 * assertion on ttyS2 lights L1 hwirq 66 on both CPUs).
 		 *
 		 * Earlier freezes in IRQ mode were NOT a wrong line number:
@@ -244,16 +244,16 @@
 		};
 
 		/*
-		 * KIR (keyboard/IR receiver) — Ruwido remote on channel 0.
+		 * KIR (keyboard/IR receiver): Ruwido remote on channel 0.
 		 *
 		 * Engineered from stock nexus.ko (BKIR_* magnum driver):
 		 *   - 3 channel windows of 0x40 bytes at 0x4088c0/900/940
 		 *   - KIR_TOP routing register at 0x408b80 (bit0 = ch0)
 		 *   - IRQ: dedicated L1 hwirq 60, measured on hardware
-		 *     (2026-07-20, kir_probe: L1 W1 bit 28 asserts on every
+		 *     (2026-07-20: L1 W1 bit 28 asserts on every
 		 *     frame and deasserts on STATUS ack; UPG IRQ0 uninvolved).
 		 *     The earlier "BINT id 0x73 = L1 bit 115" reading of
-		 *     nexus.ko was wrong — the L1 only has 96 lines.
+		 *     nexus.ko was wrong: the L1 only has 96 lines.
 		 * The block is fully programmable (CIR param file); the Ruwido
 		 * timing set is replayed by the driver (nexus protocol 0x17).
 		 */

@@ -1,5 +1,5 @@
 #!/bin/bash
-# In-container smartmontools build (static C++, musl, MIPS32 R1) — invoked by
+# In-container smartmontools build (static C++, musl, MIPS32 R1), invoked by
 # `make smartctl`. The box drops `smartctl -j` reports of its backup disk
 # where the servers' backup monitor reads them.
 # Output: /output/smartctl
@@ -13,7 +13,7 @@ URL="https://github.com/smartmontools/smartmontools/releases/download/RELEASE_${
 
 CROSS="$(cat /opt/cross-prefix)"
 
-echo "smartmontools ${SMARTMONTOOLS_VERSION} — static MIPS32 R1"
+echo "smartmontools ${SMARTMONTOOLS_VERSION}: static, MIPS32 R1"
 
 fetch "$TARBALL" "$URL"
 

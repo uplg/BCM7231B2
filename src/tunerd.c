@@ -1,11 +1,11 @@
 /*
- * tunerd.c — the AIR 7310T as a network tuner appliance for Iris.
+ * tunerd.c: the AIR 7310T as a network tuner appliance for Iris.
  *
  * Tiny HTTP daemon over the standard Linux-DVB API (bcm7231-dvb driver):
  *
  *   GET /status                     adapters' lock/SNR/freq/clients as JSON
  *   GET /channels                   the box's channel grid (names, freqs,
- *                                   pids — the mux-survey JSON, served
+ *                                   pids: the mux-survey JSON, served
  *                                   verbatim from CHANNELS_PATH so Iris
  *                                   discovers everything; re-survey =
  *                                   update one file here)
@@ -13,11 +13,11 @@
  *                                   stream raw MPEG-TS of that mux subset
  *                                   until the client hangs up
  *
- * v2 — SHARED tuners, MANY clients (the "deux personnes sur M6 + une sur
+ * v2: SHARED tuners, MANY clients (the "deux personnes sur M6 + une sur
  * RMC" requirement):
  *   - The parent owns every frontend/demux/dvr fd and runs one poll()
  *     loop; no fork-per-client. A tuned adapter stays tuned (and its DVR
- *     drained) even with zero clients — zap-backs are instant.
+ *     drained) even with zero clients, so zap-backs are instant.
  *   - N clients per adapter share ONE dvr stream (fan-out). PID filters
  *     are the UNION of what clients asked; consumers pick their service
  *     by PID (Iris maps ffmpeg by PID).
@@ -28,7 +28,7 @@
  *   - A slow client never stalls the mux: sends are non-blocking and a
  *     lagging socket just drops chunks (its decoder conceals).
  *
- * No TLS, no auth: this binds inside the home LAN / tailnet only —
+ * No TLS, no auth: this binds inside the home LAN / tailnet only;
  * transport security is the tunnel's job.
  */
 #include <stdio.h>
@@ -54,7 +54,7 @@
 #define MAX_CLIENTS  8      /* per adapter */
 #define LOCK_WAIT_MS 6000
 #define DVR_RING     (16 * 1024 * 1024)
-/* Channel grid (JSON) served by /channels — lives in the persistent
+/* Channel grid (JSON) served by /channels; it lives in the persistent
  * /config overlay so it survives reboots and reflashes. */
 #define CHANNELS_PATH "/config/tnt_channels.json"
 
@@ -228,7 +228,7 @@ static int adapter_add_filter(int a, struct adapter *ad, uint16_t pid)
 }
 
 /* Tune (or join) adapter `a` to `freq`. Returns 0 on lock. Blocks the
- * loop for up to LOCK_WAIT_MS on a real retune — the other adapter's
+ * loop for up to LOCK_WAIT_MS on a real retune; the other adapter's
  * 16 MiB DVR ring absorbs several seconds, so concurrent viewers ride
  * it out. */
 static int adapter_tune(int a, struct adapter *ad, uint32_t freq, uint32_t bw_mhz)
@@ -277,7 +277,7 @@ static int adapter_tune(int a, struct adapter *ad, uint32_t freq, uint32_t bw_mh
         ad->dvr = open(path, O_RDONLY | O_NONBLOCK);
         if (ad->dvr < 0)
             return -1;
-        /* Default DVR ring is ~190 KB (≈200 ms of a mux) — any hiccup
+        /* Default DVR ring is ~190 KB (≈200 ms of a mux): any hiccup
          * would DROP TS silently. 16 MiB rides out retunes of the other
          * adapter and slow moments. Best-effort. */
         if (ioctl(ad->dvr, DMX_SET_BUFFER_SIZE,
@@ -400,7 +400,7 @@ static void pump_adapter(struct adapter *ad)
                 ad->drops++;
                 i++;
             } else if (w < 0) {
-                client_drop(ad, i); /* gone — do not advance i */
+                client_drop(ad, i); /* gone: do not advance i */
             } else {
                 i++; /* short writes: rare on 64 KB; remainder dropped */
             }
@@ -512,7 +512,7 @@ int main(int argc, char **argv)
                     pump_adapter(ad);
                 k++;
             }
-            /* Hangup sweep — any readable/HUP client is done (HTTP GET
+            /* Hangup sweep: any readable/HUP client is done (HTTP GET
              * clients never legitimately send more data). */
             for (int i = 0; i < ad->nclients && k < n; k++) {
                 if (pfd[k].revents & (POLLIN | POLLHUP | POLLERR)) {

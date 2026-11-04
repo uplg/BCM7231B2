@@ -47,10 +47,10 @@ Partition   Offset       Size    MTD    Notes
 CFE         0x00000000   2 MB    mtd0   Bootloader (read-only)
 ENV         0x00200000   1 MB    mtd1   CFE environment
 ConfigFS    0x00300000   6 MB    mtd2   UBI: UBIFS /config (persistent overlays)
-Reserve     0x00900000   10 MB   mtd3   Reserved
-Kernel      0x01300000   7 MB    mtd4   Kernel ELF (max 7 MB!)
+Reserve     0x00900000   10 MB   mtd3   Vendor data, left as is
+Kernel      0x01300000   7 MB    mtd4   vmlinuz (self-decompressing ELF, max 7 MB)
 RootFS      0x01a00000   70 MB   mtd5   UBI: UBIFS rootfs (volume "rootfs")
-Recovery    0x06000000   28 MB   mtd6   Recovery image
+Recovery    0x06000000   28 MB   mtd6   Erased (held the vendor's recovery image)
 ```
 
 ## Build
@@ -67,7 +67,7 @@ make rootfs         # -> new_rootfs/                 (rootfs/ tree + binaries)
 make ubi            # -> rootfs.ubifs, rootfs.ubi    (UBIFS rootfs; whole-mtd5 UBI image for CFE)
 make busybox openssh wpa kird mtdutils   # individual pieces
 make e2fsprogs smartctl                  # backup target pieces
-make tools                               # DVB userland (xpt_cap, dvbzap, tunerd), not in the image
+make tools                               # DVB userland (dvbzap, tunerd; DVB=1 kernel), not in the image
 
 make kernel KERNEL_VERSION=7.2.15   # build another kernel version
 make kernel DVB=1                   # with the DVB-T adapter driver
@@ -116,7 +116,8 @@ The KIR driver decodes the Ruwido remote in hardware and delivers keycodes on
 against a custom MIPS32 R1 target spec, see scripts/kird-build.sh) POSTs
 every key event to maison, which maps keys to actions (frontend
 configurator, `/remote`). Unmapped keys land in maison's log and its
-`/api/ir/recent`, which is how new buttons are discovered.
+`/api/ir/recent`, which is how new buttons are discovered. The key codes:
+[docs/remote-keys.md](docs/remote-keys.md).
 
 Off by default. To turn it on: set `KIRD_ENABLE=1` in `/etc/kird.conf` on
 the box (or in `device/kird.conf` before a build), then run

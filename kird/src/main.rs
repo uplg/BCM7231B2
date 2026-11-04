@@ -1,4 +1,4 @@
-//! kird — forwards Ruwido remote keypresses (BCM7231 KIR, /dev/input) to the
+//! kird: forwards Ruwido remote keypresses (BCM7231 KIR, /dev/input) to the
 //! maison backend over plain HTTP on the LAN.
 //!
 //! Config via environment (set by /etc/init.d/kird from /etc/kird.conf):
@@ -7,14 +7,14 @@
 //!   KIRD_DEVICE  input device (default /dev/input/event0)
 //!
 //! Every EV_KEY event is forwarded with its value (1=press, 2=autorepeat,
-//! 0=release) — maison decides what to act on. A failed send drops the event:
+//! 0=release); maison decides what to act on. A failed send drops the event:
 //! keypresses are ephemeral, there is nothing useful to queue.
 //!
 //! Reading and sending are deliberately decoupled. The remote emits a frame
 //! every ~120 ms while a key is held, and maison can take longer than that to
 //! answer (an ADB round-trip to the TV box runs ~150 ms, far more if the box
 //! is asleep). Posting inline would block the read loop past the next frame,
-//! so every held key accrued delay — a third of a second after ten frames,
+//! so every held key accrued delay: a third of a second after ten frames,
 //! growing for as long as the button was down.
 //!
 //! So the reader never blocks: it stamps each event and hands it to a single
@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 const EV_KEY: u16 = 1;
 /// struct input_event on a 32-bit kernel ABI: u32 sec, u32 usec,
-/// u16 type, u16 code, i32 value — 16 bytes, little-endian on mipsel.
+/// u16 type, u16 code, i32 value: 16 bytes, little-endian on mipsel.
 const EVENT_SIZE: usize = 16;
 
 /// Deep enough to ride out a slow backend reply, shallow enough that a
@@ -102,9 +102,17 @@ struct Event {
     at: Instant,
 }
 
+/// A required environment variable, or a clean exit saying which one is missing.
+fn required_env(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| {
+        eprintln!("{name} not set (see /etc/kird.conf)");
+        std::process::exit(1);
+    })
+}
+
 fn main() {
-    let url_raw = std::env::var("KIRD_URL").expect("KIRD_URL not set");
-    let token = std::env::var("KIRD_TOKEN").expect("KIRD_TOKEN not set");
+    let url_raw = required_env("KIRD_URL");
+    let token = required_env("KIRD_TOKEN");
     let device =
         std::env::var("KIRD_DEVICE").unwrap_or_else(|_| "/dev/input/event0".to_string());
     let url = match parse_url(&url_raw) {
@@ -135,7 +143,7 @@ fn main() {
     let (tx, rx) = sync_channel::<Event>(QUEUE_DEPTH);
 
     // Single sender thread: keeps events in order without ever blocking the
-    // reader. Ordering matters — a release overtaking its press would leave
+    // reader. Ordering matters: a release overtaking its press would leave
     // maison believing a key is still held.
     std::thread::spawn(move || {
         for ev in rx {
@@ -155,7 +163,7 @@ fn main() {
         let mut f = match std::fs::File::open(&device) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("open {device}: {e} — retrying in 5s");
+                eprintln!("open {device}: {e}, retrying in 5s");
                 std::thread::sleep(Duration::from_secs(5));
                 continue;
             }
@@ -163,7 +171,7 @@ fn main() {
         let mut ev = [0u8; EVENT_SIZE];
         loop {
             if let Err(e) = f.read_exact(&mut ev) {
-                eprintln!("read {device}: {e} — reopening");
+                eprintln!("read {device}: {e}, reopening");
                 std::thread::sleep(Duration::from_secs(1));
                 break;
             }
@@ -185,7 +193,7 @@ fn main() {
                     eprintln!("key {code} (value {value}) dropped: queue full")
                 }
                 Err(TrySendError::Disconnected(_)) => {
-                    eprintln!("sender thread died — exiting");
+                    eprintln!("sender thread died, exiting");
                     std::process::exit(1);
                 }
             }

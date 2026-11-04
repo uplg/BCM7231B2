@@ -1,5 +1,5 @@
 #!/bin/bash
-# In-container wpa_supplicant build (static, MIPS32 R1) — invoked by
+# In-container wpa_supplicant build (static, MIPS32 R1), invoked by
 # `make wpa`. Builds a static libnl first (nl80211 driver needs it), then
 # wpa_supplicant with the internal TLS/crypto (no OpenSSL): WPA2-PSK + SAE.
 # Output: /output/wpa_supplicant, /output/wpa_cli, /output/wpa_passphrase
@@ -20,7 +20,7 @@ CROSS="$(cat /opt/cross-prefix)"
 CC="${CROSS}-gcc"
 STRIP="${CROSS}-strip"
 
-echo "wpa_supplicant ${WPA_VERSION} + libnl ${LIBNL_VERSION} — static MIPS32 R1"
+echo "wpa_supplicant ${WPA_VERSION} + libnl ${LIBNL_VERSION}: static, MIPS32 R1"
 
 fetch "$WPA_TARBALL" "$WPA_URL"
 fetch "$LIBNL_TARBALL" "$LIBNL_URL"
@@ -61,7 +61,7 @@ CONFIG_INTERNAL_LIBTOMMATH_FAST=y
 # mixed-mode networks; switch to CONFIG_TLS=mbedtls if WPA3-only is needed.
 CONFIG_DEBUG_SYSLOG=y
 WPACONFIG
-# libnl paths passed explicitly — the builder image has no pkg-config
+# libnl is staged in $STAGE: point the build at its headers and libraries
 echo "CFLAGS += -I$STAGE/include/libnl3" >> .config
 echo "LIBS += -L$STAGE/lib" >> .config
 

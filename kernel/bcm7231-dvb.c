@@ -5,7 +5,7 @@
  * processor, whose MSG record engine DMA-writes hardware-PID-filtered TS
  * into reserved DRAM rings (see /memreserve/ in bcm7231-airties-7310t.dts).
  *
- * Everything here is reverse-engineered — none of this hardware has
+ * Everything here is reverse-engineered: none of this hardware has
  * mainline support:
  *  - MxL101SF register sequences: dumped from the stock libwydvb.so
  *    (OverwriteDefault/TunerDemodMode/spur tables, xtal cfg from
@@ -17,14 +17,14 @@
  *    master chip's register interface.
  *  - XPT programming: reversed from the vendor's unstripped nexus.ko
  *    (BXPT_*), cross-checked against BCM7340 RDB headers, validated live
- *    (userspace prototype: src/xpt_cap.c).  Key trap: PID2BUF (0xa1c000)
+ *    (prototyped from userspace first).  Key trap: PID2BUF (0xa1c000)
  *    is a 128-bit per-channel buffer BITMASK (4 words/channel), not a
  *    buffer number.
  *
  * Per adapter: input band N -> parser N (PID-match mode) -> PID channels
  * (64/adapter, hw PID filter) -> MSG buffer N -> DRAM ring -> kthread ->
  * dvb_dmx_swfilter_packets().  The all-pass path (pid 0x2000) works but
- * drops ~6% above ~23 Mbps (MSG engine per-packet ceiling) — per-PID
+ * drops ~6% above ~23 Mbps (MSG engine per-packet ceiling); per-PID
  * filtering is loss-free, which is what the demux API does naturally.
  */
 
@@ -56,7 +56,7 @@ DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
 #define AIR_STAGE_SIZE     0x20000u     /* 128K RS/XC staging rings */
 #define AIR_CHANS_PER_ADAP 64u          /* hw PID channels per adapter */
 /* In parser all-pass mode every packet is tagged with the parser's
- * COMPANION channel = the band number itself — so channels 0..3 belong
+ * COMPANION channel = the band number itself, so channels 0..3 belong
  * to the parsers and normal slots must start above them.  (Learned live:
  * a stray all-pass on parser1 tags 25 Mbps as "chan 1" and floods
  * whatever buffer chan 1 routes to.) */
@@ -176,7 +176,7 @@ static const struct mxl_reg mxl_tuner_demod_mode[] = {
 	{0, 0, 0}
 };
 
-/* NOT in the vendor tables — reversed from DevConfigXtalSettings. */
+/* NOT in the vendor tables: reversed from DevConfigXtalSettings. */
 static const struct mxl_reg mxl_xtal_settings[] = {
 	{0x07, 0xff, 0x04}, {0x32, 0xff, 0xa4}, {0x31, 0xff, 0x08},
 	{0x66, 0xff, 0x14}, {0x08, 0xff, 0x0a},
@@ -241,7 +241,7 @@ struct air_adapter {
  *
  * The budget is WINDOWED, not consecutive: a wedged engine often drains
  * a few bursts from each fresh buffer before wedging it too, and a
- * fresh session (tunerd reconnect) arrives within seconds — both used
+ * fresh session (tunerd reconnect) arrives within seconds; both used
  * to hand the loop a brand-new budget, so the old "reset on any drain /
  * on first feed" bookkeeping never tripped the guard (a real cascade
  * ran 20+ hops).  Now only AIR_MIG_HEALTHY of sustained draining since
@@ -259,7 +259,7 @@ static struct air_adapter *air_adapters[AIR_NUM_ADAPTERS];
 /* Force register page 0.  The chip's page register (0x00) is GLOBAL state:
  * anything that dies between a page-2 switch and its restore (a killed
  * monitoring tool, a crashed reader) leaves EVERY later access aimed at the
- * wrong page — tunes write into the void and status reads return zeros
+ * wrong page: tunes write into the void and status reads return zeros
  * ("NO LOCK" with a perfect signal).  Every driver entry point that touches
  * page-0 registers goes through this first. */
 static int mxl_page0(struct air_adapter *a);
@@ -593,7 +593,7 @@ static void xpt_adapter_init(struct air_adapter *a)
 	u32 n = a->buf, v;
 
 	/* MSG ring: program but leave DISARMED (CTRL1=0).  Arming happens on
-	 * the first feed, right before draining starts — arming an idle
+	 * the first feed, right before draining starts: arming an idle
 	 * buffer at probe lets any stale XC backlog flood it and freeze its
 	 * engine context (the userspace-validated flow always does setup
 	 * immediately before capture for the same reason). */
@@ -683,7 +683,7 @@ static int air_start_feed(struct dvb_demux_feed *feed)
 	a->chan_pid[free] = feed->pid;
 	a->chan_ref[free] = 1;
 	if (a->nfeeds++ == 0) {
-		/* A sick adapter re-arms only once its cooldown has served —
+		/* A sick adapter re-arms only once its cooldown has served:
 		 * tunerd/Iris retry within seconds of a disarm, and letting
 		 * every fresh session wipe the verdict restarts the exact
 		 * migration cascade the guard exists to stop. */
@@ -732,7 +732,7 @@ static int air_stop_feed(struct dvb_demux_feed *feed)
 
 /* Full ring reprogram, mirroring the validated `setup` sequence.  Used at
  * thread start and as the recovery path when the engine wedges paused-full.
- * NOTE: VP bit31 is NOT an overflow latch — it is a "ring non-empty" flag
+ * NOTE: VP bit31 is NOT an overflow latch; it is a "ring non-empty" flag
  * that is perfectly normal while data is in flight.  Treating it as an
  * error and resetting on sight puts the drain in an infinite reset loop
  * (the engine refills instantly) and eventually wedges the whole MSG
@@ -751,7 +751,7 @@ static void air_ring_reprogram(struct air_adapter *a)
 }
 
 /* A wedged buffer context silently consumes and writes nothing; no reset
- * or reprogram revives it (SRAM state, survives warm reboot — only a real
+ * or reprogram revives it (SRAM state, survives warm reboot; only a real
  * power-off clears it).  There are 128 contexts though, so the recovery
  * that WORKS is migration: hop to a fresh buffer and re-route the active
  * channels' PID2BUF masks. */
@@ -777,7 +777,7 @@ static void air_ring_migrate(struct air_adapter *a)
 			       (w == (a->buf >> 5)) ? BIT(a->buf & 31) : 0);
 	}
 	mutex_unlock(&a->lock);
-	pr_warn(DRVNAME ": adapter%d: buffer wedged — migrated to buf %u\n",
+	pr_warn(DRVNAME ": adapter%d: buffer wedged, migrated to buf %u\n",
 		a->idx, a->buf);
 }
 
@@ -808,8 +808,8 @@ static int air_drain_thread(void *data)
 			   time_after(jiffies, last_change + 3 * HZ)) {
 			/* Feeds active yet VP frozen 3 s: assume a wedged
 			 * buffer context and hop.  (SYNC_COUNT can't gate
-			 * this — it's an acquisition counter that latches,
-			 * not a flow meter.)  Budget is windowed — see
+			 * this: it's an acquisition counter that latches,
+			 * not a flow meter.)  Budget is windowed: see
 			 * AIR_MAX_MIGRATIONS. */
 			if (a->migrations &&
 			    time_after(jiffies,
@@ -818,7 +818,7 @@ static int air_drain_thread(void *data)
 			if (a->migrations == 0)
 				a->mig_window_start = jiffies;
 			if (++a->migrations > AIR_MAX_MIGRATIONS) {
-				pr_warn(DRVNAME ": adapter%d: %u migrations in <%us — engine sick, disarming for %us\n",
+				pr_warn(DRVNAME ": adapter%d: %u migrations in <%us: engine sick, disarming for %us\n",
 					a->idx, a->migrations - 1,
 					AIR_MIG_WINDOW / HZ,
 					AIR_BROKEN_COOLDOWN / HZ);
@@ -861,7 +861,7 @@ static int air_drain_thread(void *data)
 					      count - first);
 			/* The hw pointers advance in burst quanta, not in
 			 * packets, and a pause/resume can shift the packet
-			 * phase inside the ring — trust the sync bytes, not
+			 * phase inside the ring: trust the sync bytes, not
 			 * the pointers: lock onto 0x47 every 188. */
 			while (sync < 188 && sync + 188 < count &&
 			       !(a->bounce[sync] == 0x47 &&
@@ -878,7 +878,7 @@ static int air_drain_thread(void *data)
 			}
 			rp = (rp + sync + usable) & (size - 1);
 			xpt_wr(XPT_MSG_DMA_RP(n), rp);
-			/* Only SUSTAINED draining clears the budget — a sick
+			/* Only SUSTAINED draining clears the budget: a sick
 			 * engine drips a few bursts from every fresh buffer,
 			 * and treating each drip as "alive" is what let the
 			 * cascade run unbounded. */
@@ -1030,7 +1030,7 @@ static int air_probe(struct platform_device *pdev)
 	for (i = 0; i < AIR_NUM_ADAPTERS; i++) {
 		ret = air_adapter_create(&pdev->dev, i);
 		if (ret) {
-			/* the slave tuner is optional — keep adapter0 */
+			/* the slave tuner is optional: keep adapter0 */
 			if (i == 0)
 				goto err_unmap;
 			pr_warn(DRVNAME ": adapter%d skipped (%d)\n", i, ret);

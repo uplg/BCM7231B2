@@ -56,8 +56,9 @@ DOCKER_RUN_KERNEL = $(subst -w /work,-v $(KBUILD_VOLUME):/kbuild -e KERNEL_VERSI
 # downloads survive between builds.
 DOCKER_RUN_KIRD = $(subst -w /work,-v airties-cargo:/opt/cargo/registry -w /work,$(DOCKER_RUN))
 
-# DVB userland tools, one .c each in src/ (run from /dev/shm, not part of the image)
-TOOLS     := xpt_cap dvbzap tunerd
+# DVB userland (a kernel built with DVB=1), one .c each in src/; copied to /dev/shm by hand,
+# not part of the image
+TOOLS     := dvbzap tunerd
 TOOL_BINS := $(addprefix $(OUT)/,$(TOOLS))
 
 .PHONY: help all builder kernel busybox mtdutils tools wpa kird rootfs ubi flash-all \

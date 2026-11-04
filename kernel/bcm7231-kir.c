@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * BCM7231 KIR (keyboard / IR receiver) input driver — AirTies AIR 7310T.
+ * BCM7231 KIR (keyboard / IR receiver) input driver (AirTies AIR 7310T).
  *
  * The stock Wyplay firmware drives this block through the proprietary
  * nexus.ko blob (magnum "BKIR" driver + NEXUS_IrInput glue).  nexus.ko is
@@ -20,13 +20,13 @@
  *    value); the Ruwido timing set (nexus protocol 0x17) is dumped from
  *    nexus.ko .rodata and replayed as-is (KIR_RUWIDO_CIR below).
  *  - 0x408b80 KIR_TOP: bit0 routes channel 0 (bits 5/8 = ch1/ch2).
- *  - IRQ: dedicated L1 hwirq 60 (measured on hardware with kir_probe;
+ *  - IRQ: dedicated L1 hwirq 60 (measured on hardware;
  *    level, deasserts on STATUS ack).
  *
  * Frame decode (from nexus_input.ko, stock userspace glue):
  *   (code & 0x7fff) in [0x7e00, 0x7f00)  =>  key index = code & 0x7f,
  * mapped through the 128-entry table dumped from the same module
- * (KIR_KEYMAP below) — this yields the exact keycodes the stock firmware
+ * (KIR_KEYMAP below); this yields the exact keycodes the stock firmware
  * delivers on /dev/input/event0.
  */
 
