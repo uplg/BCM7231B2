@@ -10,7 +10,7 @@
 #   make kernel KERNEL_VERSION=7.1.4   — try another kernel
 # =============================================================================
 
-KERNEL_VERSION   ?= 7.3
+KERNEL_VERSION   ?= 7.3.1
 # GENET_DEBUG=1 re-enables the bcmgenet printk instrumentation
 # (kernel/patch_bcmgenet_debug.py). Off by default since the IRQ
 # off-by-one root cause was fixed in the DTS.
