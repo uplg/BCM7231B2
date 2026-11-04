@@ -65,9 +65,16 @@ jobs:
           echo "${#files[@]} scripts"
           rc=0
           shellcheck -f json1 "${files[@]}" > "$RUNNER_TEMP/shellcheck.json" || rc=$?
-          # Each finding as an annotation on its line in the diff
-          jq -r '.comments[] | "::\(if .level == "error" then "error" elif .level == "warning" then "warning" else "notice" end) file=\(.file),line=\(.line),endLine=\(.endLine),col=\(.column),endColumn=\(.endColumn),title=SC\(.code)::\(.message)"' \
-            "$RUNNER_TEMP/shellcheck.json"
+          # Each finding as an annotation on its line in the diff. Workflow commands need "%", CR
+          # and LF escaped in the message, and ":" and "," too in the properties.
+          jq -r '
+            def msg: gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A");
+            def prop: msg | gsub(":"; "%3A") | gsub(","; "%2C");
+            .comments[]
+            | "::\(if .level == "error" then "error" elif .level == "warning" then "warning" else "notice" end)"
+              + " file=\(.file | prop),line=\(.line),endLine=\(.endLine),col=\(.column),endColumn=\(.endColumn),title=SC\(.code)"
+              + "::\(.message | msg)"
+          ' "$RUNNER_TEMP/shellcheck.json"
           # and readable in the log
           [ "$rc" -eq 0 ] || shellcheck "${files[@]}"
           exit "$rc"
