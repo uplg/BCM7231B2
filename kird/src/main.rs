@@ -2,11 +2,11 @@
 //! maison backend over plain HTTP on the LAN.
 //!
 //! Config via environment (set by /etc/init.d/kird from /etc/kird.conf):
-//!   KIRD_URL     e.g. http://<maison host>:3033/api/ir/key
-//!   KIRD_TOKEN   bearer token expected by maison
-//!   KIRD_DEVICE  input device (default /dev/input/event0)
+//!   `KIRD_URL`     e.g. `http://<maison host>:3033/api/ir/key`
+//!   `KIRD_TOKEN`   bearer token expected by maison
+//!   `KIRD_DEVICE`  input device (default `/dev/input/event0`)
 //!
-//! Every EV_KEY event is forwarded with its value (1=press, 2=autorepeat,
+//! Every `EV_KEY` event is forwarded with its value (1=press, 2=autorepeat,
 //! 0=release); maison decides what to act on. A failed send drops the event:
 //! keypresses are ephemeral, there is nothing useful to queue.
 //!
@@ -25,11 +25,11 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
-use std::sync::mpsc::{sync_channel, TrySendError};
+use std::sync::mpsc::{TrySendError, sync_channel};
 use std::time::{Duration, Instant};
 
 const EV_KEY: u16 = 1;
-/// struct input_event on a 32-bit kernel ABI: u32 sec, u32 usec,
+/// `struct input_event` on a 32-bit kernel ABI: u32 sec, u32 usec,
 /// u16 type, u16 code, i32 value: 16 bytes, little-endian on mipsel.
 const EVENT_SIZE: usize = 16;
 
@@ -83,11 +83,16 @@ fn post(addr: &SocketAddr, url: &Url, token: &str, body: &str) -> Result<(), Str
         body.len(),
         body
     );
-    s.write_all(req.as_bytes()).map_err(|e| format!("send: {e}"))?;
+    s.write_all(req.as_bytes())
+        .map_err(|e| format!("send: {e}"))?;
     let mut buf = [0u8; 256];
     let n = s.read(&mut buf).unwrap_or(0);
     let head = String::from_utf8_lossy(&buf[..n]);
-    let status = head.split_whitespace().nth(1).unwrap_or("<none>").to_string();
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("<none>")
+        .to_string();
     if status.starts_with('2') {
         Ok(())
     } else {
@@ -113,8 +118,7 @@ fn required_env(name: &str) -> String {
 fn main() {
     let url_raw = required_env("KIRD_URL");
     let token = required_env("KIRD_TOKEN");
-    let device =
-        std::env::var("KIRD_DEVICE").unwrap_or_else(|_| "/dev/input/event0".to_string());
+    let device = std::env::var("KIRD_DEVICE").unwrap_or_else(|_| "/dev/input/event0".to_string());
     let url = match parse_url(&url_raw) {
         Ok(u) => u,
         Err(e) => {
@@ -125,13 +129,10 @@ fn main() {
 
     // Resolved once: doing it per keypress put a lookup on the hot path.
     let addr = match (url.host.as_str(), url.port).to_socket_addrs() {
-        Ok(mut addrs) => match addrs.next() {
-            Some(addr) => addr,
-            None => {
-                eprintln!("resolve {}: no address", url.host);
-                std::process::exit(1);
-            }
-        },
+        Ok(mut addrs) => addrs.next().unwrap_or_else(|| {
+            eprintln!("resolve {}: no address", url.host);
+            std::process::exit(1);
+        }),
         Err(e) => {
             eprintln!("resolve {}: {e}", url.host);
             std::process::exit(1);
@@ -190,7 +191,7 @@ fn main() {
             }) {
                 Ok(()) => {}
                 Err(TrySendError::Full(_)) => {
-                    eprintln!("key {code} (value {value}) dropped: queue full")
+                    eprintln!("key {code} (value {value}) dropped: queue full");
                 }
                 Err(TrySendError::Disconnected(_)) => {
                     eprintln!("sender thread died, exiting");
