@@ -19,7 +19,7 @@ WPA_VERSION      ?= 2.12
 LIBNL_VERSION    ?= 3.12.0
 # Backup target: ext4 tools, chroot SFTP, SMART
 E2FSPROGS_VERSION     ?= 1.47.4
-OPENSSH_VERSION       ?= 10.6p1
+OPENSSH_VERSION       ?= 10.6p2
 ZLIB_VERSION          ?= 1.3.2
 SMARTMONTOOLS_VERSION ?= 7.5
 
