@@ -37,6 +37,10 @@ make install >/dev/null
 
 echo "[*] Configuring OpenSSH..."
 cd "$BUILDDIR/openssh-${OPENSSH_VERSION}"
+# 10.6p2: the musl/no-PAM fix calls free() in auth-passwd.c without
+# <stdlib.h>; glibc pulls it in through another header, musl does not.
+grep -q '^#include <stdlib.h>' auth-passwd.c || sed -i 's/^#include <stdio.h>$/#include <stdio.h>\n#include <stdlib.h>/' auth-passwd.c
+grep -q '^#include <stdlib.h>' auth-passwd.c || { echo "!! auth-passwd.c patch failed"; exit 1; }
 ./configure \
     --host="${CROSS}" \
     --prefix=/usr \
