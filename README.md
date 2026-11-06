@@ -200,7 +200,9 @@ Original firmware backups live in `backup/` (`mtd4_backup.bin`,
 
 `wlan0` takes DHCP. `eth0` is the recovery path: DHCP when a cable is in at
 boot, else the fixed `192.168.2.1`. SSH on port 22 (admin), backup SFTP on
-port 2222 (backup role only). Nothing else listens.
+port 2222 (backup role only; a second sshd that opens it once the backup
+disk is mounted and the chroots exist, so port 22 never waits for the
+disk). Nothing else listens.
 
 ## CFE reference
 

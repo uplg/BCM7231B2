@@ -1,0 +1,7 @@
+#!/bin/sh
+# sshd for the backup accounts, port 2222 only (init respawns it; mkrootfs.sh adds its inittab
+# line with the backup role). It opens the port once /etc/init.d/backup has mounted the disk and
+# made the chroots: before that, a client got in and its session died on safely_chroot
+# (2026-11-06, vykar reconnecting during the boot). Port 22 (root) never waits for the disk.
+while [ ! -e /var/run/backup-ready ]; do sleep 2; done
+exec /usr/sbin/sshd -D -f /etc/ssh/sshd_config -p 2222 -o PidFile=/var/run/sshd-backup.pid

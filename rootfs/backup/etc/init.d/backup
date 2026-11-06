@@ -1,7 +1,7 @@
 #!/bin/sh
 # Backup target: mounts the backup disk (ext4, label "backup") on
-# /srv/backup, then writes the first SMART report. sshd (inittab) serves the
-# chroots; the servers reach it through a subnet route on a tailnet node of
+# /srv/backup, then writes the first SMART report. sshd on port 2222
+# (sshd-backup-run, inittab) serves the chroots once they exist; the servers reach it through a subnet route on a tailnet node of
 # the LAN (the box runs none: its CPU spent 1.5 cores on wireguard-go).
 # Idempotent. Runs in the background from rcS (waits for disk and clock).
 D=/srv/backup   # mount point baked into the read-only rootfs
@@ -52,6 +52,7 @@ for h in $hosts; do
     chown root:root "$D/vykar-$h"; chmod 755 "$D/vykar-$h"
     chown "vykar-$h:vykar" "$D/vykar-$h/repo"; chmod 700 "$D/vykar-$h/repo"
 done
+touch /var/run/backup-ready   # sshd-backup-run opens port 2222
 
 # Clock first: the SMART report carries its time, the servers judge its age
 # (/usr/sbin/ntp-event marks it set at ntpd's first sync)

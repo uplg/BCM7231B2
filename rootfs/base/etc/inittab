@@ -1,7 +1,9 @@
 # BusyBox inittab: <id>:<runlevels>:<action>:<process>
 # rcS runs to its end first; the respawn lines then start, and init restarts them when they exit.
 ::sysinit:/etc/init.d/rcS
-::respawn:/usr/sbin/sshd -D -f /etc/ssh/sshd_config
+# sshd: port 22 here, from the start; with the backup role, mkrootfs.sh appends port 2222
+# (/usr/sbin/sshd-backup-run, once the backup disk is up). -p overrides the config's Port lines.
+::respawn:/usr/sbin/sshd -D -f /etc/ssh/sshd_config -p 22
 ::respawn:/usr/sbin/ntp-run
 ::respawn:/usr/sbin/crond -f -c /var/spool/cron/crontabs
 ttyS0::respawn:/sbin/getty -L ttyS0 115200 vt102

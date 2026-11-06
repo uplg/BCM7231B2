@@ -109,6 +109,8 @@ if ls "$BASEDIR"/device/vykar/*.pub >/dev/null 2>&1; then
         info "  account vykar-$h"
     done
     echo "$BACKUP_HOSTS" > "$NEWROOT/etc/ssh/backup_hosts"
+    # Port 2222: its own sshd, opened once the disk and the chroots are up
+    echo "::respawn:/usr/sbin/sshd-backup-run" >> "$NEWROOT/etc/inittab"
 fi
 
 # sshd_config: root (port 22, key only) + the backup accounts (port 2222, SFTP only, chrooted),
